@@ -63,6 +63,12 @@ jobs:
         run: pnpm tauri build ${{ matrix.args }}
         env:
           MACOSX_DEPLOYMENT_TARGET: '11.0'
+          # whisper-rs-sys forwards any CMAKE_* env var to its cmake build of
+          # whisper.cpp/ggml. Setting CMAKE_OSX_DEPLOYMENT_TARGET ensures the
+          # C++ subproject targets macOS 11.0 so std::filesystem::path / u8path
+          # (introduced in 10.15) are available. MACOSX_DEPLOYMENT_TARGET alone
+          # is not reliably propagated to the cmake subproject on newer SDKs.
+          CMAKE_OSX_DEPLOYMENT_TARGET: '11.0'
 
       - name: Upload bundles
         uses: actions/upload-artifact@v4
