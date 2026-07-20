@@ -119,6 +119,24 @@ pub fn requeue(conn: &Connection, id: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Requeue with a different model/quant. If `language` is Some, the language
+/// column is updated too (None keeps the previous value — e.g. a detected
+/// language from the last run carries over).
+pub fn requeue_with(
+    conn: &Connection,
+    id: &str,
+    model_id: &str,
+    quant: &str,
+    language: Option<&str>,
+) -> Result<(), String> {
+    conn.execute(
+        "UPDATE works SET status = 'queued', error = NULL, model_id = ?2, quant = ?3, language = COALESCE(?4, language), updated_at = ?5 WHERE id = ?1",
+        rusqlite::params![id, model_id, quant, language, now()],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 pub fn set_status(conn: &Connection, id: &str, status: &str, error: Option<&str>) -> Result<(), String> {
     conn.execute(
         "UPDATE works SET status = ?2, error = ?3, updated_at = ?4 WHERE id = ?1",

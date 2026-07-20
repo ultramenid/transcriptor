@@ -1,6 +1,9 @@
-// Model catalog + first-run picker + download/list/delete (ggml from HuggingFace).
-// Sizes and sha256 sourced from the HF API for ggerganov/whisper.cpp and
-// distil-whisper/distil-large-v3-ggml — re-fetch if variants change upstream.
+// Model catalog: one full-precision variant per model, sized from a 78 MB
+// preview up to a 3.1 GB max-accuracy build. The large-v3-turbo is the
+// recommended default — it matches large-v3's accuracy at ~6x the speed.
+//
+// Sizes and sha256 sourced from the HF API for ggerganov/whisper.cpp.
+// Re-fetch if filenames change upstream.
 
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -9,11 +12,134 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Emitter};
 
+/// A user-imported custom model. Each maps to a single `Quant::Full` variant
+/// whose `.bin` file lives in `models_dir`. Persisted as `custom_models.json`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CustomModel {
+    pub id: String,
+    pub label: String,
+    pub languages: String,
+    pub filename: String,
+}
+
+fn custom_registry_path(app_data_dir: &Path) -> PathBuf {
+    app_data_dir.join("custom_models.json")
+}
+
+/// Loads the custom-model registry. Missing or invalid file → empty list
+/// (mirrors `config::load`).
+pub fn list_custom(app_data_dir: &Path) -> Vec<CustomModel> {
+    let path = custom_registry_path(app_data_dir);
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+pub fn save_custom_registry(app_data_dir: &Path, models: &[CustomModel]) -> Result<(), String> {
+    std::fs::create_dir_all(app_data_dir).map_err(|e| e.to_string())?;
+    let json = serde_json::to_string_pretty(models).map_err(|e| e.to_string())?;
+    std::fs::write(custom_registry_path(app_data_dir), json).map_err(|e| e.to_string())
+}
+
+/// The full model list: built-in `catalog()` plus user-imported customs. Each
+/// custom becomes a single `Quant::Full` variant sized from the file on disk
+/// (0 if the file is missing — `is_installed` will report false and the
+/// frontend won't offer it for transcription).
+pub fn all_models(app_data_dir: &Path) -> Vec<ModelEntry> {
+    let mut out = catalog();
+    let dir = models_dir(app_data_dir);
+    for cm in list_custom(app_data_dir) {
+        let size_bytes = std::fs::metadata(dir.join(&cm.filename))
+            .map(|m| m.len())
+            .unwrap_or(0);
+        out.push(ModelEntry {
+            id: cm.id,
+            label: cm.label,
+            speed: "Custom".into(),
+            accuracy: String::new(),
+            languages: cm.languages,
+            license: "Custom".into(),
+            variants: vec![ModelVariant {
+                quant: Quant::Full,
+                filename: cm.filename,
+                repo: String::new(),
+                size_bytes,
+                sha256: String::new(),
+            }],
+        });
+    }
+    out
+}
+
+/// Resolve a variant for either a built-in or a custom model. Tries the
+/// built-in catalog first; if that misses and `model_id` starts with
+/// `custom-`, looks the model up in the custom registry and builds a variant
+/// from the file on disk.
+pub fn find_variant_any(app_data_dir: &Path, model_id: &str, quant: Quant) -> Option<ModelVariant> {
+    if let Some(v) = find_variant(model_id, quant) {
+        return Some(v);
+    }
+    if !model_id.starts_with("custom-") {
+        return None;
+    }
+    let cm = list_custom(app_data_dir).into_iter().find(|m| m.id == model_id)?;
+    let size_bytes = std::fs::metadata(models_dir(app_data_dir).join(&cm.filename))
+        .map(|m| m.len())
+        .unwrap_or(0);
+    Some(ModelVariant {
+        quant: Quant::Full,
+        filename: cm.filename,
+        repo: String::new(),
+        size_bytes,
+        sha256: String::new(),
+    })
+}
+
+/// Imports a user-supplied `.bin` file as a custom model: copies it into
+/// `models_dir`, registers it in `custom_models.json`, returns the new id.
+pub fn add_custom(
+    app_data_dir: &Path,
+    src_path: &str,
+    label: &str,
+    languages: &str,
+) -> Result<String, String> {
+    let label_trim = label.trim();
+    if label_trim.is_empty() {
+        return Err("label must not be empty".to_string());
+    }
+    let lower = src_path.to_ascii_lowercase();
+    if !lower.ends_with(".bin") {
+        return Err("source file must be a .bin file".to_string());
+    }
+    let src = std::path::Path::new(src_path);
+    if !src.is_file() {
+        return Err("source file does not exist".to_string());
+    }
+
+    let id = format!("custom-{}", uuid::Uuid::new_v4());
+    let filename = format!("{id}.bin");
+
+    let dir = models_dir(app_data_dir);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let dest = dir.join(&filename);
+    std::fs::copy(src, &dest).map_err(|e| e.to_string())?;
+
+    let mut registry = list_custom(app_data_dir);
+    registry.push(CustomModel {
+        id: id.clone(),
+        label: label_trim.to_string(),
+        languages: languages.to_string(),
+        filename,
+    });
+    save_custom_registry(app_data_dir, &registry)?;
+
+    Ok(id)
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Quant {
-    Compact,
-    Balanced,
     Full,
 }
 
@@ -37,20 +163,7 @@ pub struct ModelEntry {
     pub variants: Vec<ModelVariant>,
 }
 
-macro_rules! v {
-    ($quant:ident, $file:expr, $repo:expr, $size:expr, $sha:expr) => {
-        ModelVariant {
-            quant: Quant::$quant,
-            filename: $file.to_string(),
-            repo: $repo.to_string(),
-            size_bytes: $size,
-            sha256: $sha.to_string(),
-        }
-    };
-}
-
 const WHISPER_CPP: &str = "ggerganov/whisper.cpp";
-const DISTIL_LARGE_V3: &str = "distil-whisper/distil-large-v3-ggml";
 
 pub fn catalog() -> Vec<ModelEntry> {
     vec![
@@ -58,60 +171,65 @@ pub fn catalog() -> Vec<ModelEntry> {
             id: "tiny".into(), label: "Tiny".into(), speed: "Fastest".into(),
             accuracy: "Lowest".into(), languages: "Multilingual".into(), license: "MIT".into(),
             variants: vec![
-                v!(Compact, "ggml-tiny-q5_1.bin", WHISPER_CPP, 32152673u64, "818710568da3ca15689e31a743197b520007872ff9576237bda97bd1b469c3d7"),
-                v!(Balanced, "ggml-tiny-q8_0.bin", WHISPER_CPP, 43537433u64, "c2085835d3f50733e2ff6e4b41ae8a2b8d8110461e18821b09a15c40c42d1cca"),
-                v!(Full, "ggml-tiny.bin", WHISPER_CPP, 77691713u64, "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21"),
+                ModelVariant {
+                    quant: Quant::Full,
+                    filename: "ggml-tiny.bin".into(),
+                    repo: WHISPER_CPP.into(),
+                    size_bytes: 77691713,
+                    sha256: "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21".into(),
+                },
             ],
         },
         ModelEntry {
             id: "base".into(), label: "Base".into(), speed: "Very fast".into(),
             accuracy: "Low".into(), languages: "Multilingual".into(), license: "MIT".into(),
             variants: vec![
-                v!(Compact, "ggml-base-q5_1.bin", WHISPER_CPP, 59707625u64, "422f1ae452ade6f30a004d7e5c6a43195e4433bc370bf23fac9cc591f01a8898"),
-                v!(Balanced, "ggml-base-q8_0.bin", WHISPER_CPP, 81768585u64, "c577b9a86e7e048a0b7eada054f4dd79a56bbfa911fbdacf900ac5b567cbb7d9"),
-                v!(Full, "ggml-base.bin", WHISPER_CPP, 147951465u64, "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe"),
+                ModelVariant {
+                    quant: Quant::Full,
+                    filename: "ggml-base.bin".into(),
+                    repo: WHISPER_CPP.into(),
+                    size_bytes: 147951465,
+                    sha256: "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe".into(),
+                },
             ],
         },
         ModelEntry {
             id: "small".into(), label: "Small".into(), speed: "Fast".into(),
             accuracy: "Moderate".into(), languages: "Multilingual".into(), license: "MIT".into(),
             variants: vec![
-                v!(Compact, "ggml-small-q5_1.bin", WHISPER_CPP, 190085487u64, "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb"),
-                v!(Balanced, "ggml-small-q8_0.bin", WHISPER_CPP, 264464607u64, "49c8fb02b65e6049d5fa6c04f81f53b867b5ec9540406812c643f177317f779f"),
-                v!(Full, "ggml-small.bin", WHISPER_CPP, 487601967u64, "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b"),
-            ],
-        },
-        ModelEntry {
-            id: "medium".into(), label: "Medium".into(), speed: "Moderate".into(),
-            accuracy: "High".into(), languages: "Multilingual".into(), license: "MIT".into(),
-            variants: vec![
-                v!(Compact, "ggml-medium-q5_0.bin", WHISPER_CPP, 539212467u64, "19fea4b380c3a618ec4723c3eef2eb785ffba0d0538cf43f8f235e7b3b34220f"),
-                v!(Balanced, "ggml-medium-q8_0.bin", WHISPER_CPP, 823369779u64, "42a1ffcbe4167d224232443396968db4d02d4e8e87e213d3ee2e03095dea6502"),
-                v!(Full, "ggml-medium.bin", WHISPER_CPP, 1533763059u64, "6c14d5adee5f86394037b4e4e8b59f1673b6cee10e3cf0b11bbdbee79c156208"),
+                ModelVariant {
+                    quant: Quant::Full,
+                    filename: "ggml-small.bin".into(),
+                    repo: WHISPER_CPP.into(),
+                    size_bytes: 487601967,
+                    sha256: "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b".into(),
+                },
             ],
         },
         ModelEntry {
             id: "large-v3-turbo".into(), label: "Large v3 Turbo".into(), speed: "Fast".into(),
             accuracy: "Very high".into(), languages: "Multilingual".into(), license: "MIT".into(),
             variants: vec![
-                v!(Compact, "ggml-large-v3-turbo-q5_0.bin", WHISPER_CPP, 574041195u64, "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2"),
-                v!(Balanced, "ggml-large-v3-turbo-q8_0.bin", WHISPER_CPP, 874188075u64, "317eb69c11673c9de1e1f0d459b253999804ec71ac4c23c17ecf5fbe24e259a1"),
-                v!(Full, "ggml-large-v3-turbo.bin", WHISPER_CPP, 1624555275u64, "1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69"),
+                ModelVariant {
+                    quant: Quant::Full,
+                    filename: "ggml-large-v3-turbo.bin".into(),
+                    repo: WHISPER_CPP.into(),
+                    size_bytes: 1624555275,
+                    sha256: "1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69".into(),
+                },
             ],
         },
         ModelEntry {
             id: "large-v3".into(), label: "Large v3".into(), speed: "Slowest".into(),
             accuracy: "Highest".into(), languages: "Multilingual".into(), license: "MIT".into(),
             variants: vec![
-                v!(Compact, "ggml-large-v3-q5_0.bin", WHISPER_CPP, 1081140203u64, "d75795ecff3f83b5faa89d1900604ad8c780abd5739fae406de19f23ecd98ad1"),
-                v!(Full, "ggml-large-v3.bin", WHISPER_CPP, 3095033483u64, "64d182b440b98d5203c4f9bd541544d84c605196c4f7b845dfa11fb23594d1e2"),
-            ],
-        },
-        ModelEntry {
-            id: "distil-large-v3".into(), label: "Distil Large v3".into(), speed: "Fast".into(),
-            accuracy: "High".into(), languages: "English only".into(), license: "MIT".into(),
-            variants: vec![
-                v!(Full, "ggml-distil-large-v3.bin", DISTIL_LARGE_V3, 1519521155u64, "2883a11b90fb10ed592d826edeaee7d2929bf1ab985109fe9e1e7b4d2b69a298"),
+                ModelVariant {
+                    quant: Quant::Full,
+                    filename: "ggml-large-v3.bin".into(),
+                    repo: WHISPER_CPP.into(),
+                    size_bytes: 3095033483,
+                    sha256: "64d182b440b98d5203c4f9bd541544d84c605196c4f7b845dfa11fb23594d1e2".into(),
+                },
             ],
         },
     ]
@@ -137,17 +255,33 @@ pub fn is_installed(app_data_dir: &Path, variant: &ModelVariant) -> bool {
 }
 
 pub fn delete_model(app_data_dir: &Path, model_id: &str, quant: Quant) -> Result<(), String> {
-    let variant = find_variant(model_id, quant).ok_or("unknown model/quant")?;
-    let path = installed_path(app_data_dir, &variant);
-    if path.is_file() {
-        std::fs::remove_file(path).map_err(|e| e.to_string())?;
+    if let Some(variant) = find_variant(model_id, quant) {
+        let path = installed_path(app_data_dir, &variant);
+        if path.is_file() {
+            std::fs::remove_file(path).map_err(|e| e.to_string())?;
+        }
+        return Ok(());
     }
-    Ok(())
+    if model_id.starts_with("custom-") {
+        let mut registry = list_custom(app_data_dir);
+        if let Some(idx) = registry.iter().position(|m| m.id == model_id) {
+            let filename = registry[idx].filename.clone();
+            let path = models_dir(app_data_dir).join(&filename);
+            if path.is_file() {
+                std::fs::remove_file(path).map_err(|e| e.to_string())?;
+            }
+            registry.remove(idx);
+            save_custom_registry(app_data_dir, &registry)?;
+        }
+        return Ok(());
+    }
+    Err("unknown model".to_string())
 }
 
 #[derive(Debug, Clone, Serialize)]
 struct DownloadProgress {
     model_id: String,
+    quant: String,
     downloaded: u64,
     total: u64,
 }
@@ -195,6 +329,10 @@ pub async fn download_model(
         .map_err(|e| e.to_string())?;
 
     let mut downloaded = if resumed { already } else { 0 };
+    let quant_str = serde_json::to_value(quant)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_default();
     let mut stream = resp.bytes_stream();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| format!("download stream error: {e}"))?;
@@ -202,7 +340,12 @@ pub async fn download_model(
         downloaded += chunk.len() as u64;
         let _ = app.emit(
             "model-download-progress",
-            DownloadProgress { model_id: model_id.to_string(), downloaded, total: variant.size_bytes },
+            DownloadProgress {
+                model_id: model_id.to_string(),
+                quant: quant_str.clone(),
+                downloaded,
+                total: variant.size_bytes,
+            },
         );
     }
     drop(file);

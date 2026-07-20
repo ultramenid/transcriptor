@@ -27,6 +27,7 @@ fn lib_err(_: std::sync::PoisonError<std::sync::MutexGuard<'_, rusqlite::Connect
 // ---- Models ----
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ModelVariantWire {
     quant: Quant,
     size_bytes: u64,
@@ -47,7 +48,7 @@ pub struct ModelEntryWire {
 #[tauri::command]
 pub fn list_models(app: AppHandle) -> Result<Vec<ModelEntryWire>, String> {
     let dir = app_data_dir(&app)?;
-    Ok(models::catalog()
+    Ok(models::all_models(&dir)
         .into_iter()
         .map(|m| ModelEntryWire {
             variants: m
@@ -79,6 +80,17 @@ pub async fn download_model(app: AppHandle, model_id: String, quant: Quant) -> R
 pub fn delete_model(app: AppHandle, model_id: String, quant: Quant) -> Result<(), String> {
     let dir = app_data_dir(&app)?;
     models::delete_model(&dir, &model_id, quant)
+}
+
+#[tauri::command]
+pub fn add_custom_model(
+    app: AppHandle,
+    src_path: String,
+    label: String,
+    languages: String,
+) -> Result<String, String> {
+    let dir = app_data_dir(&app)?;
+    models::add_custom(&dir, &src_path, &label, &languages)
 }
 
 // ---- Settings ----
@@ -219,6 +231,126 @@ fn retry_work_impl<R: tauri::Runtime>(app: tauri::AppHandle<R>, lib_state: State
 }
 
 #[tauri::command]
+pub fn rerun_work(
+    app: AppHandle,
+    lib_state: State<'_, Library>,
+    id: String,
+    model_id: String,
+    quant: Quant,
+    language: Option<String>,
+) -> Result<(), String> {
+    let quant_str = serde_json::to_value(quant)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_default();
+    // "auto" means detect — store as NULL so the worker treats it as auto.
+    let lang = language.and_then(|l| if l == "auto" { None } else { Some(l) });
+    {
+        let conn = lib_state.0.lock().map_err(lib_err)?;
+        crate::library::requeue_with(&conn, &id, &model_id, &quant_str, lang.as_deref())?;
+    }
+    let _ = app.emit("queue-updated", ());
+    start_queue_worker(app);
+    Ok(())
+}
+
+/// Re-transcribe a single segment's `[start, end]` window with a different
+/// model and replace that segment in place. Runs synchronously on the caller's
+/// thread (a single segment is usually <30s); emits the same segment/progress
+/// events as a full run so the UI can show live progress.
+#[tauri::command]
+pub async fn rerun_segment(
+    app: AppHandle,
+    lib_state: State<'_, Library>,
+    id: String,
+    model_id: String,
+    quant: Quant,
+    language: Option<String>,
+    start: f64,
+    end: f64,
+    index: i64,
+) -> Result<(), String> {
+    let dir = app_data_dir(&app)?;
+    let cancel_flag = Arc::new(AtomicBool::new(false));
+
+    // Load the work up front so we hold the DB lock as briefly as possible.
+    let work = {
+        let conn = lib_state.0.lock().map_err(lib_err)?;
+        crate::library::get(&conn, &id)?.ok_or("work not found")?
+    };
+    let source_path = work.source_path.clone().ok_or("work has no source path")?;
+
+    let variant = models::find_variant_any(&dir, &model_id, quant).ok_or("unknown model/quant")?;
+    let model_path = models::installed_path(&dir, &variant);
+    if !model_path.is_file() {
+        return Err(format!("model \"{model_id}\" is not downloaded yet"));
+    }
+
+    {
+        let conn = lib_state.0.lock().map_err(lib_err)?;
+        crate::library::set_status(&conn, &id, "running", None)?;
+    }
+    let _ = app.emit("queue-updated", ());
+
+    let input = std::path::Path::new(&source_path);
+    let wav_path = audio::extract_range_to_wav(&app, input, start, end, cancel_flag.clone()).await?;
+
+    // Prefer the language chosen in the dialog; fall back to the work's stored
+    // language (e.g. a previously detected one). "auto"/None → detect.
+    let lang_arg = language
+        .and_then(|l| if l == "auto" { None } else { Some(l) })
+        .or_else(|| work.language.clone().filter(|l| l != "auto"));
+    let app_for_blocking = app.clone();
+    let work_id = id.clone();
+    let model_path_for_blocking = model_path.clone();
+    let wav_path_for_blocking = wav_path.clone();
+    let transcribe_result = tokio::task::spawn_blocking(move || {
+        crate::whisper::transcribe_range(
+            &app_for_blocking,
+            &work_id,
+            &model_path_for_blocking,
+            &wav_path_for_blocking,
+            lang_arg.as_deref(),
+            cancel_flag,
+            start,
+        )
+    })
+    .await
+    .map_err(|e| format!("transcription task panicked: {e}"))?;
+
+    let _ = std::fs::remove_file(&wav_path);
+
+    let new_segments = transcribe_result?.segments;
+
+    // A segment re-run only rewrites that one segment's text — its timestamps
+    // and index stay put. The model may return several sub-segments for the
+    // range; join their text so the row stays a single segment.
+    let joined_text = new_segments
+        .iter()
+        .map(|s| s.text.trim())
+        .filter(|t| !t.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    {
+        let conn = lib_state.0.lock().map_err(lib_err)?;
+        // NOTE: status is "running" here — we set it ourselves above. Load the
+        // segments unconditionally; gating on status == "done" would yield an
+        // empty transcript and wipe the work.
+        let existing = crate::library::get(&conn, &id)?.map(|w| w.segments).unwrap_or_default();
+        let mut merged = existing.clone();
+        let idx = index as usize;
+        if let Some(seg) = merged.get_mut(idx) {
+            seg.text = joined_text;
+        }
+        crate::library::update_transcript_edit(&conn, &id, &merged)?;
+        crate::library::set_status(&conn, &id, "done", None)?;
+    }
+    let _ = app.emit("queue-updated", ());
+    Ok(())
+}
+
+#[tauri::command]
 pub fn cancel_work(
     lib_state: State<'_, Library>,
     queue: State<'_, QueueState>,
@@ -312,13 +444,10 @@ async fn run_transcription<R: tauri::Runtime>(
     let _ = app.emit("queue-updated", ());
 
     let model_id = work.model_id.clone().ok_or("no model selected for this work")?;
-    let quant = match work.quant.as_deref() {
-        Some("compact") => Quant::Compact,
-        Some("balanced") => Quant::Balanced,
-        Some("full") => Quant::Full,
-        _ => Quant::Compact,
-    };
-    let variant = models::find_variant(&model_id, quant).ok_or("unknown model/quant")?;
+    // Only one quant per model now; the column is kept for back-compat with
+    // older rows but everything maps to Full.
+    let quant = Quant::Full;
+    let variant = models::find_variant_any(&dir, &model_id, quant).ok_or("unknown model/quant")?;
     let model_path = models::installed_path(&dir, &variant);
     if !model_path.is_file() {
         return Err(format!("model \"{model_id}\" is not downloaded yet"));

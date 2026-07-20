@@ -114,7 +114,7 @@ async fn main() {
         app.state::<Library>(),
         paths,
         "tiny".to_string(),
-        transcriptor_lib::models::Quant::Compact,
+        transcriptor_lib::models::Quant::Full,
         Some("auto".to_string()),
     )
     .expect("enqueue files");

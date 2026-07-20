@@ -1,4 +1,15 @@
-export type Quant = "compact" | "balanced" | "full";
+// Only one variant per model now (full precision). Kept as a literal type so
+// the persisted schema and IPC shapes stay stable.
+export type Quant = "full";
+
+// A staged-but-not-enqueued file. Each carries its own model + language since
+// different files may need different settings.
+export interface PendingFile {
+  path: string;
+  model: string;
+  quant: Quant;
+  language: string;
+}
 
 export interface Segment {
   start: number;

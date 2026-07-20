@@ -32,37 +32,43 @@ export default function Settings() {
   }
 
   return (
-    <main className="flex-1 px-5 py-10 md:px-12 md:py-14 lg:px-20">
-      <div className="mx-auto max-w-2xl">
-        <h1 className="mb-8 text-2xl font-semibold tracking-tight text-ink md:mb-10 md:text-3xl">Settings</h1>
+    <main className="h-full overflow-y-auto">
+      <div className="mx-auto max-w-2xl px-6 py-10 md:px-10">
+        <h1 className="mb-8 text-xl font-semibold tracking-tight text-ink">Settings</h1>
 
-        <div className="space-y-6">
-          <div>
-            <label className="mb-1 block text-sm text-ink-faint">Output folder</label>
-            <div className="flex items-center gap-3">
-              <span className="truncate text-sm text-ink-muted">
-                {settings.outputDir ?? "Downloads (default)"}
-              </span>
-              <button
-                onClick={chooseOutputDir}
-                className="shrink-0 rounded-md border border-border-subtle px-3 py-1.5 text-xs text-ink-muted hover:border-ink-faint"
-              >
-                Change
-              </button>
-            </div>
+        <div className="grid grid-cols-[1fr_auto] items-center gap-x-6 border-t border-border-subtle py-4">
+          <div className="min-w-0">
+            <p className="text-sm text-ink">Output folder</p>
+            <p className="mt-0.5 truncate font-mono text-[11px] text-ink-faint">
+              {settings.outputDir ?? "Downloads (default)"}
+            </p>
           </div>
-
-          <label className="flex items-center gap-2">
-            <input
-              type="checkbox"
-              checked={settings.copySourceIntoLibrary}
-              onChange={(e) => save({ ...settings, copySourceIntoLibrary: e.target.checked })}
-            />
-            <span className="text-sm text-ink">Copy source media into the library</span>
-          </label>
-
-          {saved && <p className="text-xs text-accent">Saved.</p>}
+          <button
+            onClick={chooseOutputDir}
+            className="rounded-md border border-border-subtle px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.15em] text-ink-muted transition-colors hover:border-border-strong hover:text-ink"
+          >
+            Change
+          </button>
         </div>
+
+        <label className="grid cursor-pointer grid-cols-[1fr_auto] items-center gap-x-6 border-t border-b border-border-subtle py-4">
+          <div>
+            <p className="text-sm text-ink">Copy source media into the library</p>
+            <p className="mt-0.5 font-mono text-[11px] text-ink-faint">
+              Keeps playback working even if the original file moves.
+            </p>
+          </div>
+          <input
+            type="checkbox"
+            checked={settings.copySourceIntoLibrary}
+            onChange={(e) => save({ ...settings, copySourceIntoLibrary: e.target.checked })}
+            className="h-4 w-4 accent-[var(--color-ink)]"
+          />
+        </label>
+
+        {saved && (
+          <p className="mt-3 font-mono text-[10px] uppercase tracking-[0.15em] text-ink-faint">Saved</p>
+        )}
       </div>
     </main>
   );

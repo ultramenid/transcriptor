@@ -24,4 +24,5 @@ dist-ssr
 *.sw?
 .claude/
 .vscode/
-.github/
+# Keep CI workflows tracked (needed to build Windows binaries for sharing).
+!.github/workflows/

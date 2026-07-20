@@ -2,10 +2,10 @@ import { useMemo, useRef, useState } from "react";
 import type { Segment } from "../lib/types";
 import { formatDuration, formatTimecode } from "../lib/time";
 
-// Audacity-ish timeline: a ruler with major/minor ticks + timecodes, segment
-// bars laid out at their real time position (height = how much was said), and a
-// playhead that sweeps across while transcribing. Doubles as the rich progress
-// view — the bars are the actual transcript filling in left to right.
+// Audio-editor timeline: a ruler with major/minor ticks + timecodes, and a
+// mirrored waveform rendered from the transcript itself — speech density
+// drives amplitude, silence stays flat. Doubles as the rich progress view
+// while transcribing: the wave fills in left to right as segments arrive.
 
 // Ponytail: nice round intervals (1,2,5…3600s). Pick the smallest that yields
 // ≤7 major labels so the ruler never crowds, regardless of file length.
@@ -16,13 +16,15 @@ function majorStep(duration: number): number {
   return STEP[STEP.length - 1];
 }
 
-// Deterministic per-segment "amplitude": longer utterances = taller bars. Gives
-// a real waveform silhouette from the content, no RNG, no jitter on re-render.
-function barHeight(seg: Segment): number {
-  const words = seg.text.trim().split(/\s+/).filter(Boolean).length;
-  // ~2px per word, clamped to a 28–100% band so even single words stay visible
-  // and very long segments cap out instead of dominating.
-  return Math.min(100, Math.max(28, 24 + words * 2.5));
+// Fixed slot count keeps rendering cost flat regardless of file length or
+// segment count; sub-pixel flex widths are fine.
+const SLOTS = 200;
+
+// Deterministic per-slot jitter — a real-looking wave texture with no RNG, so
+// nothing shimmers on re-render.
+function jitter(i: number): number {
+  const x = Math.sin(i * 12.9898) * 43758.5453;
+  return x - Math.floor(x);
 }
 
 export default function Waveform({
@@ -68,6 +70,28 @@ export default function Waveform({
     return { major, minor };
   }, [dur]);
 
+  // Amplitude per slot: 0 = silence (rendered as a hairline dot), otherwise a
+  // 30–100% band scaled by the covering segment's words-per-second plus
+  // deterministic jitter. One pass with a segment pointer — both are sorted.
+  const slots = useMemo(() => {
+    if (dur <= 0) return [];
+    const out: number[] = [];
+    let si = 0;
+    for (let i = 0; i < SLOTS; i++) {
+      const t = ((i + 0.5) / SLOTS) * dur;
+      while (si < segments.length && segments[si].end < t) si++;
+      const seg = si < segments.length && segments[si].start <= t ? segments[si] : null;
+      if (!seg) {
+        out.push(0);
+        continue;
+      }
+      const words = seg.text.trim().split(/\s+/).filter(Boolean).length;
+      const density = Math.min(1, words / Math.max(0.5, seg.end - seg.start) / 4); // ~4 wps caps out
+      out.push(Math.min(100, 30 + density * 45 + jitter(i) * 30));
+    }
+    return out;
+  }, [segments, dur]);
+
   const playhead = running
     ? Math.min(100, Math.max(0, progress))
     : currentTime != null && dur > 0
@@ -78,12 +102,12 @@ export default function Waveform({
   // the panel isn't empty before transcription starts.
   if (dur <= 0) {
     return (
-      <div className="flex h-20 items-end gap-[3px] rounded-md border border-border-subtle bg-panel px-3 py-2">
+      <div className="flex h-[8.5rem] items-center gap-[3px] rounded-md border border-border-subtle bg-panel px-3 py-2">
         {Array.from({ length: 48 }).map((_, i) => (
           <span
             key={i}
             style={{ animationDelay: `${((i * 53) % 100) / 100}s` }}
-            className="w-[3px] origin-bottom flex-1 rounded-full bg-ink-faint/60 animate-[wave_3.2s_ease-in-out_infinite] motion-reduce:animate-none"
+            className="h-1/2 w-[3px] flex-1 rounded-full bg-ink-faint/60 animate-[wave_3.2s_ease-in-out_infinite] motion-reduce:animate-none"
           />
         ))}
       </div>
@@ -99,6 +123,7 @@ export default function Waveform({
   const trackRef = useRef<HTMLDivElement>(null);
   const draggingRef = useRef(false);
   const [dragging, setDragging] = useState(false);
+  const [hoverT, setHoverT] = useState<number | null>(null);
   const scrubbing = !running && !!onSeek;
 
   const timeFromX = (clientX: number) => {
@@ -138,10 +163,13 @@ export default function Waveform({
     selectAt(t);
   };
   const onPointerMove = (e: React.PointerEvent) => {
-    if (!draggingRef.current) return;
-    const t = timeFromX(e.clientX);
-    onSeek!(t);
-    selectAt(t);
+    if (draggingRef.current) {
+      const t = timeFromX(e.clientX);
+      onSeek!(t);
+      selectAt(t);
+    } else if (scrubbing) {
+      setHoverT(timeFromX(e.clientX));
+    }
   };
   const onPointerUp = (e: React.PointerEvent) => {
     if (!draggingRef.current) return;
@@ -180,19 +208,20 @@ export default function Waveform({
         ))}
       </div>
 
-      {/* Track — double-clicks as the scrubber when playback is available. */}
+      {/* Track — mirrored waveform; doubles as the scrubber when playback is available. */}
       <div
         ref={trackRef}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
-        className={`relative h-14 touch-none select-none ${
+        onPointerLeave={() => setHoverT(null)}
+        className={`relative h-28 touch-none select-none ${
           scrubbing ? (dragging ? "cursor-grabbing" : "cursor-pointer") : ""
         }`}
       >
         {/* baseline */}
-        <div className="absolute inset-x-0 bottom-1/2 top-1/2 h-px bg-border-subtle/60" />
+        <div className="absolute inset-x-0 top-1/2 h-px bg-border-subtle/60" />
 
         {/* Played region — subtle tint left of the playhead */}
         {playhead != null && (
@@ -232,32 +261,38 @@ export default function Waveform({
           </>
         )}
 
-        {/* segment bars at real time positions */}
-        {segments.map((s, i) => {
-          const left = (s.start / dur) * 100;
-          const width = Math.max(0.4, ((s.end - s.start) / dur) * 100);
-          const isLive = running && i === segments.length - 1;
-          const isSelected = selection != null && s.start === selection.start && s.end === selection.end;
-          return (
-            <span
-              key={i}
-              style={{
-                left: `${left}%`,
-                width: `${width}%`,
-                height: `${barHeight(s)}%`,
-              }}
-              className={`absolute bottom-0 -translate-x-px rounded-sm transition-[height,opacity] duration-200 ${
-                isLive
-                  ? "bg-ink animate-pulse motion-reduce:animate-none"
-                  : isSelected
-                    ? "bg-ink"
-                    : selection && !isSelected
-                      ? "bg-ink-faint/50"
-                      : "bg-ink-muted"
-              }`}
-            />
-          );
-        })}
+        {/* The wave — mirrored around the baseline, silence stays flat. */}
+        <div className="pointer-events-none absolute inset-x-1 inset-y-1.5 flex items-center gap-[1.5px]">
+          {slots.map((h, i) => {
+            const t = ((i + 0.5) / SLOTS) * dur;
+            const inSel = selection != null && t >= selection.start && t <= selection.end;
+            return (
+              <span
+                key={i}
+                style={{ height: h > 0 ? `${h}%` : "3px" }}
+                className={`min-w-0 flex-1 rounded-full transition-[height] duration-200 ${
+                  h === 0
+                    ? "bg-border-subtle"
+                    : inSel
+                      ? "bg-ink"
+                      : selection
+                        ? "bg-ink-faint/60"
+                        : "bg-ink-muted"
+                }`}
+              />
+            );
+          })}
+        </div>
+
+        {/* Hover hairline + timecode — preview of where a click will seek. */}
+        {hoverT != null && !dragging && scrubbing && (
+          <div className="pointer-events-none absolute inset-y-0 z-10" style={{ left: pct(hoverT) }}>
+            <div className="absolute inset-y-0 w-px -translate-x-1/2 bg-ink-faint" />
+            <span className="absolute bottom-0.5 left-1 whitespace-nowrap bg-bg/70 px-0.5 font-mono text-[9px] tabular-nums text-ink-muted">
+              {formatTimecode(hoverT)}
+            </span>
+          </div>
+        )}
 
         {/* Playhead — the line plus a grabbable handle. Dragging routes through
            the track's pointer handlers (the handle is just a visual hit target). */}
@@ -268,7 +303,11 @@ export default function Waveform({
             }`}
             style={{ left: `${playhead}%` }}
           >
-            <div className="absolute inset-y-0 w-px bg-ink" />
+            <div
+              className={`absolute inset-y-0 w-px bg-ink ${
+                running ? "animate-pulse motion-reduce:animate-none" : ""
+              }`}
+            />
             {scrubbing && (
               <div
                 className={`absolute -top-1 h-2.5 w-2.5 -translate-x-1/2 rounded-full bg-ink ring-2 ring-bg ${

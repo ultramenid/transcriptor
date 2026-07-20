@@ -1,12 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { Segment, Work } from "../lib/types";
+import type { ModelEntry, Segment, Work } from "../lib/types";
 import { formatDuration, formatTimecode } from "../lib/time";
 import Waveform from "../components/Waveform";
 import ConfirmDialog from "../components/ConfirmDialog";
+import RerunDialog, { type RerunSelection } from "../components/RerunDialog";
 
 const EXPORT_FORMATS = ["txt", "srt", "vtt", "json", "article"] as const;
+
+// Placeholder used only when a RerunDialog is closed — its `initial` prop is
+// evaluated on every render, so it must never throw even before models load.
+// The dialog resets from `initial` to the real pending selection on open.
+const PLACEHOLDER_SELECTION: RerunSelection = { modelId: "", language: "auto" };
 
 export default function Transcript({ workId, onDelete }: { workId: string; onDelete: () => void }) {
   const [work, setWork] = useState<Work | null>(null);
@@ -16,6 +22,39 @@ export default function Transcript({ workId, onDelete }: { workId: string; onDel
   const [view, setView] = useState<"timestamped" | "article">("timestamped");
   const [exportMsg, setExportMsg] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+
+  // Re-run with a different model + quality + language: both whole-file and
+  // per-segment re-run open a dialog. The dialog state carries either nothing
+  // (whole-file) or the segment index to replace (per-segment).
+  const [models, setModels] = useState<ModelEntry[]>([]);
+  const [pendingRerun, setPendingRerun] = useState<RerunSelection | null>(null);
+  const [pendingSegRerun, setPendingSegRerun] = useState<{ index: number } & RerunSelection | null>(null);
+  const [rerunningIndex, setRerunningIndex] = useState<number | null>(null);
+
+  useEffect(() => {
+    invoke<ModelEntry[]>("list_models").then(setModels);
+  }, []);
+
+  const canRerun = models.some((m) => m.variants.some((v) => v.installed));
+
+  // Default selection for a re-run dialog: the work's current model, falling
+  // back to the first installed model if that one isn't installed anymore
+  // (e.g. it was deleted after the original run). Language defaults to the
+  // stored language, or auto. Returns null if no installed model is available
+  // yet (e.g. before the model list has loaded) — callers should only invoke
+  // this when they know a re-run is possible.
+  function defaultRerunSelection(): RerunSelection | null {
+    const installed = models.filter((m) => m.variants.some((v) => v.installed));
+    const curModelInstalled = work?.modelId && models.some(
+      (m) => m.id === work.modelId && m.variants.some((v) => v.installed),
+    );
+    if (curModelInstalled) {
+      return { modelId: work!.modelId!, language: work?.language ?? "auto" };
+    }
+    const first = installed[0];
+    if (!first) return null;
+    return { modelId: first.id, language: work?.language ?? "auto" };
+  }
 
   const loadWork = useCallback(() => {
     invoke<Work | null>("get_work", { id: workId }).then((w) => {
@@ -47,8 +86,21 @@ export default function Transcript({ workId, onDelete }: { workId: string; onDel
     };
   }, [workId, loadWork]);
 
-  const segments = work?.status === "done" ? editedSegments ?? work.segments : liveSegments;
   const isRunning = work?.status === "running" || work?.status === "queued";
+  // A per-segment re-run flips status to running then back to done, but the
+  // rest of the transcript is unchanged — keep showing the finished segments
+  // and just pulse the affected row instead of swapping to live sub-segments.
+  const isSegRerunning = rerunningIndex !== null;
+  const segments =
+    work?.status === "done" || isSegRerunning
+      ? editedSegments ?? work?.segments ?? []
+      : liveSegments;
+
+  // A per-segment re-run sets status to running then back to done; clear the
+  // pulsing row indicator once the work is done again.
+  useEffect(() => {
+    if (work?.status === "done") setRerunningIndex(null);
+  }, [work?.status, work?.updatedAt]);
 
   // Wall-clock time since transcription started. Started the moment work flips
   // to running, frozen when it stops. The interval lives only while running, so
@@ -93,7 +145,7 @@ export default function Transcript({ workId, onDelete }: { workId: string; onDel
     return idx;
   })();
 
-  const selIdx = isRunning
+  const selIdx = isRunning && !isSegRerunning
     ? segments.length ? liveIdx : -1
     : playing
       ? playingIndex
@@ -150,6 +202,42 @@ export default function Transcript({ workId, onDelete }: { workId: string; onDel
     await invoke("retry_work", { id: workId });
     loadWork();
   }
+  async function doRerun(sel: RerunSelection) {
+    setLiveSegments([]);
+    setEditedSegments(null);
+    setProgress(0);
+    await invoke("rerun_work", { id: workId, modelId: sel.modelId, language: sel.language });
+    loadWork();
+  }
+  function requestRerun() {
+    const sel = defaultRerunSelection();
+    if (sel) setPendingRerun(sel);
+  }
+  async function doRerunSegment(index: number, sel: RerunSelection) {
+    const seg = segments[index];
+    if (!seg || !work?.sourcePath) return;
+    setRerunningIndex(index);
+    setLiveSegments([]);
+    setEditedSegments(null);
+    try {
+      await invoke("rerun_segment", {
+        id: workId,
+        modelId: sel.modelId,
+        language: sel.language,
+        start: seg.start,
+        end: seg.end,
+        index,
+      });
+    } catch (e) {
+      setRerunningIndex(null);
+      setExportMsg(String(e));
+    }
+    loadWork();
+  }
+  function requestSegRerun(index: number) {
+    const sel = defaultRerunSelection();
+    if (sel) setPendingSegRerun({ index, ...sel });
+  }
   async function doDelete() {
     await invoke("delete_work", { id: workId });
     onDelete();
@@ -162,6 +250,13 @@ export default function Transcript({ workId, onDelete }: { workId: string; onDel
     setEditedSegments(next);
     await invoke("update_transcript", { id: workId, segments: next });
   }
+
+  // Export feedback is transient — a transport-bar toast, not page state.
+  useEffect(() => {
+    if (!exportMsg) return;
+    const t = setTimeout(() => setExportMsg(null), 4000);
+    return () => clearTimeout(t);
+  }, [exportMsg]);
 
   async function doExport(format: string) {
     setExportMsg(null);
@@ -179,150 +274,102 @@ export default function Transcript({ workId, onDelete }: { workId: string; onDel
     setExportMsg("Copied to clipboard");
   }
 
+  const transportBtn =
+    "rounded-md border border-border-subtle px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.1em] text-ink-muted transition-colors hover:border-border-strong hover:text-ink";
+
   return (
-    <main className="flex-1 px-5 py-10 md:px-12 md:py-14 lg:px-20">
-      <div className="mx-auto max-w-5xl">
-        <audio
-          ref={audioRef}
-          src={srcUrl ?? undefined}
-          onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
-          onPlay={() => setPlaying(true)}
-          onPause={() => setPlaying(false)}
-          onEnded={() => setPlaying(false)}
-          className="hidden"
-        />
-        <div className="mb-6 flex items-center justify-between gap-4">
-          <div className="flex min-w-0 items-baseline gap-3">
-            <h1 className="truncate text-xl font-semibold tracking-tight text-ink md:text-2xl">
-              {work?.sourceFilename ?? "Transcribing…"}
-            </h1>
-            {work?.durationSecs != null && (
-              <span className="shrink-0 font-mono text-xs tabular-nums text-ink-faint">
-                {formatDuration(work.durationSecs)}
-              </span>
-            )}
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            {isRunning && (
-              <button
-                onClick={doCancel}
-                className="rounded-md border border-border-subtle px-3 py-1.5 font-mono text-[11px] uppercase tracking-wide text-ink-muted hover:border-ink-faint"
-              >
-                Cancel
-              </button>
-            )}
-            {work?.status === "failed" && (
-              <button
-                onClick={doRetry}
-                className="rounded-md border border-border-subtle px-3 py-1.5 font-mono text-[11px] uppercase tracking-wide text-ink-muted hover:border-ink-faint"
-              >
-                Retry
-              </button>
-            )}
-            <div className="flex gap-1 rounded-md border border-border-subtle bg-panel p-1">
-              {(["timestamped", "article"] as const).map((v) => (
+    <main className="relative flex h-full flex-col">
+      <audio
+        ref={audioRef}
+        src={srcUrl ?? undefined}
+        onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
+        onPlay={() => setPlaying(true)}
+        onPause={() => setPlaying(false)}
+        onEnded={() => setPlaying(false)}
+        className="hidden"
+      />
+
+      {/* Scrollable document area */}
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="mx-auto max-w-5xl px-6 pb-10 md:px-10">
+          <div className="flex items-center justify-between gap-4 py-6">
+            <div className="min-w-0">
+              <h1 className="truncate text-xl font-semibold tracking-tight text-ink">
+                {work?.sourceFilename ?? "Transcribing…"}
+              </h1>
+              <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.15em] text-ink-faint">
+                {work?.modelId ?? "—"}
+                {work?.quant ? ` · ${work.quant}` : ""} · {work?.language ?? "—"}
+                {work?.durationSecs != null ? ` · ${formatDuration(work.durationSecs)}` : ""}
+              </p>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              {work?.sourcePath && canRerun && !isRunning && (
                 <button
-                  key={v}
-                  onClick={() => setView(v)}
-                  className={`rounded px-3 py-1 font-mono text-[11px] uppercase tracking-wide ${
-                    view === v ? "bg-ink text-bg" : "text-ink-faint hover:text-ink-muted"
-                  }`}
+                  onClick={requestRerun}
+                  className="flex items-center gap-1.5 rounded-md border border-border-subtle px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.1em] text-ink-muted transition-colors hover:border-border-strong hover:text-ink"
                 >
-                  {v}
+                  Re-run
                 </button>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        {view === "timestamped" && (work?.durationSecs != null || segments.length > 0) && (
-          <div className="sticky top-0 z-20 mb-6 bg-bg/95 pb-3 pt-1 backdrop-blur">
-            <Waveform
-              durationSecs={work?.durationSecs ?? null}
-              segments={segments}
-              progress={progress}
-              running={isRunning}
-              currentTime={!isRunning ? currentTime : null}
-              selection={selection}
-              onSelect={(i) => setSelectedIndex(i)}
-              onSeek={seekTo}
-              onScrubStart={() => audioRef.current?.pause()}
-            />
-            <div className="mt-2 flex items-center gap-3 font-mono text-[11px] uppercase tracking-wide text-ink-faint tabular-nums">
-              {isRunning ? (
-                <>
-                  <span>Transcribing</span>
-                  <span className="ml-auto flex items-baseline gap-3">
-                    <span className="text-ink">{Math.round(progress)}%</span>
-                    <span>{segments.length} segments</span>
-                    <span>{formatDuration(elapsed)}</span>
-                  </span>
-                </>
-              ) : (
-                <>
-                  <button
-                    onClick={togglePlay}
-                    disabled={!srcUrl}
-                    className="flex h-6 w-6 items-center justify-center rounded-md text-ink-muted hover:text-ink disabled:opacity-40"
-                    aria-label={playing ? "Pause" : "Play"}
-                    title={`${playing ? "Pause" : "Play"} (space)`}
-                  >
-                    {playing ? (
-                      <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor" aria-hidden>
-                        <rect x="2" y="1.5" width="2.5" height="9" rx="0.5" />
-                        <rect x="7.5" y="1.5" width="2.5" height="9" rx="0.5" />
-                      </svg>
-                    ) : (
-                      <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor" aria-hidden>
-                        <path d="M3 1.5l7 4.5-7 4.5z" />
-                      </svg>
-                    )}
-                  </button>
-                  <span className="text-ink">{formatTimecode(currentTime)}</span>
-                  <span>/ {work?.durationSecs != null ? formatDuration(work.durationSecs) : "—"}</span>
-                  <span className="ml-auto flex items-center gap-3">
-                    {work?.modelId && (
-                      <span>
-                        Model <span className="text-ink-muted">
-                          {work.modelId}
-                          {work?.quant ? ` · ${work.quant}` : ""}
-                        </span>
-                      </span>
-                    )}
-                    <span>
-                      Lang <span className="text-ink-muted">{work?.language ?? "—"}</span>
-                    </span>
-                  </span>
-                </>
               )}
+              <div className="flex gap-1 rounded-md border border-border-subtle bg-panel p-1">
+                {(["timestamped", "article"] as const).map((v) => (
+                  <button
+                    key={v}
+                    onClick={() => setView(v)}
+                    className={`rounded px-3 py-1 font-mono text-[10px] uppercase tracking-[0.1em] ${
+                      view === v ? "bg-ink text-bg" : "text-ink-faint hover:text-ink-muted"
+                    }`}
+                  >
+                    {v}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
-        )}
 
-        {work?.status === "failed" && (
-          <div className="mb-8 rounded-md border border-border-subtle bg-panel px-4 py-3">
-            <p className="font-mono text-[11px] uppercase tracking-wide text-ink-faint">Error</p>
-            <p className="mt-1 text-sm text-ink">{work.error}</p>
-          </div>
-        )}
+          {view === "timestamped" && (work?.durationSecs != null || segments.length > 0) && (
+            <div className="sticky top-0 z-20 -mx-1 bg-bg/95 px-1 pb-3 pt-1 backdrop-blur">
+              <Waveform
+                durationSecs={work?.durationSecs ?? null}
+                segments={segments}
+                progress={progress}
+                running={isRunning && !isSegRerunning}
+                currentTime={!isRunning || isSegRerunning ? currentTime : null}
+                selection={selection}
+                onSelect={(i) => setSelectedIndex(i)}
+                onSeek={seekTo}
+                onScrubStart={() => audioRef.current?.pause()}
+              />
+            </div>
+          )}
 
-        <div>
+          {work?.status === "failed" && (
+            <div className="mb-8 rounded-md border border-border-subtle bg-panel px-4 py-3">
+              <p className="font-mono text-[10px] uppercase tracking-[0.15em] text-ink-faint">Error</p>
+              <p className="mt-1 text-sm text-ink">{work.error}</p>
+            </div>
+          )}
+
           {view === "timestamped" ? (
             <>
               {segments.length > 0 && (
                 <div ref={gridRef} className="border-t border-border-subtle">
                   {/* Column header */}
-                  <div className="grid grid-cols-[2.5rem_7.5rem_7.5rem_4.5rem_1fr] border-b border-border-subtle bg-bg font-mono text-[10px] uppercase tracking-wide text-ink-faint">
+                  <div className="grid grid-cols-[2.5rem_7.5rem_7.5rem_4.5rem_1fr_1.5rem] border-b border-border-subtle bg-bg font-mono text-[10px] uppercase tracking-[0.1em] text-ink-faint">
                     <span className="px-2 py-2 text-right">#</span>
                     <span className="px-2 py-2">Start</span>
                     <span className="px-2 py-2">End</span>
                     <span className="px-2 py-2 text-right">Dur</span>
                     <span className="px-3 py-2">Text</span>
+                    <span />
                   </div>
 
                   {segments.map((s, i) => {
-                    const isLive = isRunning && i === liveIdx;
+                    const isLive = isRunning && !isSegRerunning && i === liveIdx;
                     const isSel = i === selIdx;
+                    const isRerunning = rerunningIndex === i;
+                    const rowCanRerun = canRerun && work?.status === "done" && !!work.sourcePath && !isRunning;
                     return (
                       <div
                         key={i}
@@ -355,7 +402,7 @@ export default function Transcript({ workId, onDelete }: { workId: string; onDel
                             el.querySelector<HTMLParagraphElement>("p[contenteditable]")?.focus();
                           }
                         }}
-                        className={`grid scroll-mt-36 cursor-pointer grid-cols-[2.5rem_7.5rem_7.5rem_4.5rem_1fr] items-start border-b border-border-subtle/60 outline-none ${
+                        className={`group grid scroll-mt-32 cursor-pointer grid-cols-[2.5rem_7.5rem_7.5rem_4.5rem_1fr_1.5rem] items-start border-b border-border-subtle/60 outline-none ${
                           isSel ? "bg-panel-2" : "hover:bg-panel"
                         }`}
                       >
@@ -385,7 +432,7 @@ export default function Transcript({ workId, onDelete }: { workId: string; onDel
                         </span>
                         <p
                           className={`px-3 py-2 text-sm leading-snug text-ink outline-none ${
-                            isLive ? "animate-pulse motion-reduce:animate-none" : ""
+                            isLive || isRerunning ? "animate-pulse motion-reduce:animate-none" : ""
                           }`}
                           contentEditable={work?.status === "done"}
                           suppressContentEditableWarning
@@ -393,20 +440,37 @@ export default function Transcript({ workId, onDelete }: { workId: string; onDel
                         >
                           {s.text}
                         </p>
+                        <div className="relative flex items-start justify-center pt-1.5">
+                          {isRerunning ? (
+                            <span
+                              className="h-1.5 w-1.5 rounded-full bg-ink animate-pulse motion-reduce:animate-none"
+                              aria-label="Re-running segment"
+                            />
+                          ) : rowCanRerun ? (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                requestSegRerun(i);
+                              }}
+                              aria-label={`Re-run segment ${i + 1}`}
+                              title="Re-run this segment"
+                              className="flex h-5 w-5 items-center justify-center rounded text-ink-faint opacity-0 transition-opacity hover:bg-panel-2 hover:text-ink focus:opacity-100 group-hover:opacity-100"
+                            >
+                              <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden>
+                                <path
+                                  d="M13 8a5 5 0 1 1-2.2-4.14M13 3v2.4h-2.4"
+                                  stroke="currentColor"
+                                  strokeWidth="1.4"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                />
+                              </svg>
+                            </button>
+                          ) : null}
+                        </div>
                       </div>
                     );
                   })}
-                </div>
-              )}
-
-              {/* Status bar */}
-              {segments.length > 0 && (
-                <div className="mt-3 flex items-center justify-between font-mono text-[11px] uppercase tracking-wide text-ink-faint tabular-nums">
-                  <span>{segments.length} subtitles</span>
-                  <span>
-                    {work?.durationSecs != null ? `${formatDuration(work.durationSecs)} total` : ""}
-                    {selIdx >= 0 ? ` · sel ${selIdx + 1}` : ""}
-                  </span>
                 </div>
               )}
 
@@ -417,8 +481,8 @@ export default function Transcript({ workId, onDelete }: { workId: string; onDel
               )}
             </>
           ) : (
-            <div className="mx-auto max-w-3xl">
-              <p className="whitespace-pre-wrap leading-relaxed text-ink">
+            <div className="mx-auto max-w-2xl py-4">
+              <p className="whitespace-pre-wrap font-serif text-[17px] leading-[1.8] text-ink">
                 {segments.map((s) => s.text).join(" ")}
               </p>
               {segments.length === 0 && !isRunning && (
@@ -429,36 +493,134 @@ export default function Transcript({ workId, onDelete }: { workId: string; onDel
             </div>
           )}
         </div>
+      </div>
 
-        {work?.status === "done" && (
-          <div className="mt-10 border-t border-border-subtle pt-6">
-            <div className="flex flex-wrap items-center gap-2">
-              {EXPORT_FORMATS.map((f) => (
-                <button
-                  key={f}
-                  onClick={() => doExport(f)}
-                  className="rounded-md border border-border-subtle px-3 py-1.5 font-mono text-[11px] uppercase tracking-wide text-ink-muted hover:border-ink-faint"
-                >
-                  {f}
+      {/* Export/copy feedback, floated just above the transport bar. */}
+      {exportMsg && (
+        <p className="pointer-events-none absolute bottom-14 left-1/2 z-30 max-w-[80%] -translate-x-1/2 truncate rounded-md border border-border-subtle bg-panel px-3 py-1.5 font-mono text-[11px] text-ink-muted shadow-lg">
+          {exportMsg}
+        </p>
+      )}
+
+      {/* Transport bar — the one instrument strip for everything operational. */}
+      <footer className="flex h-12 shrink-0 items-center gap-4 border-t border-border-subtle bg-panel px-4">
+        {isRunning && !isSegRerunning ? (
+          <>
+            <span className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.15em] text-ink-faint">
+              <span className="h-1.5 w-1.5 rounded-full bg-ink animate-pulse motion-reduce:animate-none" aria-hidden />
+              Transcribing
+            </span>
+            <span className="font-mono text-sm tabular-nums text-ink">{Math.round(progress)}%</span>
+            <span className="font-mono text-[11px] tabular-nums text-ink-faint">
+              {segments.length} segments · {formatDuration(elapsed)}
+            </span>
+            <button onClick={doCancel} className={`ml-auto ${transportBtn}`}>
+              Cancel
+            </button>
+          </>
+        ) : (
+          <>
+            <button
+              onClick={togglePlay}
+              disabled={!srcUrl}
+              className="flex h-7 w-7 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-panel-2 hover:text-ink disabled:opacity-40"
+              aria-label={playing ? "Pause" : "Play"}
+              title={`${playing ? "Pause" : "Play"} (space)`}
+            >
+              {playing ? (
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor" aria-hidden>
+                  <rect x="2" y="1.5" width="2.5" height="9" rx="0.5" />
+                  <rect x="7.5" y="1.5" width="2.5" height="9" rx="0.5" />
+                </svg>
+              ) : (
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor" aria-hidden>
+                  <path d="M3 1.5l7 4.5-7 4.5z" />
+                </svg>
+              )}
+            </button>
+            <span className="font-mono text-sm tabular-nums text-ink">{formatTimecode(currentTime)}</span>
+            <span className="font-mono text-[11px] tabular-nums text-ink-faint">
+              / {work?.durationSecs != null ? formatDuration(work.durationSecs) : "—"}
+              {segments.length > 0 ? ` · ${segments.length} subtitles` : ""}
+            </span>
+
+            <div className="ml-auto flex items-center gap-1.5">
+              {work?.status === "failed" && (
+                <button onClick={doRetry} className={transportBtn}>
+                  Retry
                 </button>
-              ))}
-              <button
-                onClick={copyToClipboard}
-                className="rounded-md border border-border-subtle px-3 py-1.5 font-mono text-[11px] uppercase tracking-wide text-ink-muted hover:border-ink-faint"
-              >
-                Copy
-              </button>
+              )}
+              {work?.status === "done" && (
+                <>
+                  {EXPORT_FORMATS.map((f) => (
+                    <button key={f} onClick={() => doExport(f)} className={transportBtn}>
+                      {f}
+                    </button>
+                  ))}
+                  <button onClick={copyToClipboard} className={transportBtn}>
+                    Copy
+                  </button>
+                  <span className="mx-1 h-4 w-px bg-border-subtle" aria-hidden />
+                </>
+              )}
               <button
                 onClick={() => setConfirmDelete(true)}
-                className="ml-auto rounded-md border border-border-subtle px-3 py-1.5 font-mono text-[11px] uppercase tracking-wide text-ink-faint hover:border-ink-faint hover:text-ink-muted"
+                aria-label="Delete transcript"
+                title="Delete"
+                className="flex h-7 w-7 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-panel-2 hover:text-ink"
               >
-                Delete
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden>
+                  <path
+                    d="M3 4h10M6.5 4V2.5h3V4M5 4l.6 9h4.8L11 4M7 7v4M9 7v4"
+                    stroke="currentColor"
+                    strokeWidth="1.3"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
               </button>
             </div>
-            {exportMsg && <p className="mt-2 text-xs text-ink-faint">{exportMsg}</p>}
-          </div>
+          </>
         )}
-      </div>
+      </footer>
+
+      <RerunDialog
+        open={pendingRerun !== null}
+        title="Re-transcribe"
+        context={work?.sourceFilename ?? ""}
+        warning="This will run the whole file again and replace the current transcript, including any edits."
+        models={models}
+        initial={pendingRerun ?? PLACEHOLDER_SELECTION}
+        confirmLabel="Re-run"
+        onConfirm={(sel) => {
+          setPendingRerun(null);
+          doRerun(sel);
+        }}
+        onCancel={() => setPendingRerun(null)}
+      />
+      <RerunDialog
+        open={pendingSegRerun !== null}
+        title="Re-transcribe segment"
+        context={
+          pendingSegRerun
+            ? `Segment ${pendingSegRerun.index + 1} · ${formatTimecode(segments[pendingSegRerun.index]?.start ?? 0)} → ${formatTimecode(segments[pendingSegRerun.index]?.end ?? 0)}`
+            : ""
+        }
+        warning="This will re-run just this segment's time range and replace its text."
+        models={models}
+        initial={
+          pendingSegRerun
+            ? { modelId: pendingSegRerun.modelId, language: pendingSegRerun.language }
+            : PLACEHOLDER_SELECTION
+        }
+        confirmLabel="Re-run"
+        onConfirm={(sel) => {
+          const idx = pendingSegRerun?.index;
+          setPendingSegRerun(null);
+          if (idx != null) doRerunSegment(idx, sel);
+        }}
+        onCancel={() => setPendingSegRerun(null)}
+      />
       <ConfirmDialog
         open={confirmDelete}
         title="Delete transcript?"
