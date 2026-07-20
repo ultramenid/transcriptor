@@ -1,9 +1,12 @@
 name: Build
 
+# Only build installers when we actually want to ship: on version tags
+# (v*), prerelease tags (v*-*) or a manual run. Avoids spending ~10 min
+# of macOS/Windows runner time on every push.
 on:
   push:
-    branches: [main, master]
-  pull_request:
+    tags:
+      - 'v*'
   workflow_dispatch:
 
 jobs:
