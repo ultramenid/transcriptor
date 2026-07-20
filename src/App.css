@@ -1,0 +1,103 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg: #0a0a0a;
+  --color-panel: #141414;
+  --color-panel-2: #1c1c1c;
+  --color-border-subtle: #262626;
+  --color-ink: #fafafa;
+  --color-ink-muted: #a3a3a3;
+  --color-ink-faint: #6b6b6b;
+  /* ponytail: accent stays as a token so existing classnames work, but maps to
+     near-white — the only "highlight" in a monochrome UI is brightness itself. */
+  --color-accent: #fafafa;
+  --color-accent-bright: #ffffff;
+
+  /* Offline-safe: system mono only. Assigned to every data role (timecodes,
+     sizes, status, counts) — the "console for audio" split. No webfonts. */
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", "Menlo", "Cascadia Code",
+    "Roboto Mono", monospace;
+}
+
+/* Light theme — same tokens overridden, so every utility flips. Applied to
+   <html> by the no-flash script in index.html and the toggle in Sidebar. */
+.light {
+  --color-bg: #fafafa;
+  --color-panel: #f2f2f2;
+  --color-panel-2: #e8e8e8;
+  --color-border-subtle: #d9d9d9;
+  --color-ink: #0a0a0a;
+  --color-ink-muted: #525252;
+  --color-ink-faint: #8a8a8a;
+  --color-accent: #0a0a0a;
+  --color-accent-bright: #000000;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-bg);
+  color: var(--color-ink);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Quiet, monochrome scrollbars to match the UI. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border-subtle) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--color-border-subtle);
+  border-radius: 9999px;
+  border: 3px solid var(--color-bg);
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--color-ink-faint);
+}
+
+/* Native select options inherit the dark theme on most platforms. */
+select option {
+  background: var(--color-panel);
+  color: var(--color-ink);
+}
+
+/* One quiet, monochrome focus ring for every interactive thing. */
+:focus-visible {
+  outline: 2px solid var(--color-ink);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Ambient waveform used by the dropzone idle state. */
+@keyframes wave {
+  0%,
+  100% {
+    transform: scaleY(0.35);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+/* Respect reduced motion: kill ambient animation + the running-status pulse. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

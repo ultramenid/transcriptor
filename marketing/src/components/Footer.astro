@@ -1,0 +1,67 @@
+---
+const cols = [
+  {
+    heading: "Product",
+    links: [
+      { label: "Features", href: "#features" },
+      { label: "How it works", href: "#how" },
+      { label: "Download", href: "#download" },
+      { label: "FAQ", href: "#faq" },
+    ],
+  },
+  {
+    heading: "Project",
+    links: [
+      { label: "GitHub", href: "https://github.com/transcriptor/transcriptor" },
+      { label: "Releases", href: "https://github.com/transcriptor/transcriptor/releases" },
+      { label: "Report an issue", href: "https://github.com/transcriptor/transcriptor/issues" },
+    ],
+  },
+];
+---
+
+<footer class="border-t border-hairline">
+  <div class="mx-auto max-w-6xl px-6 py-16">
+    <div class="grid gap-12 sm:grid-cols-2 lg:grid-cols-4">
+      <div class="lg:col-span-2">
+        <div class="flex items-center gap-2.5">
+          <span class="h-4 w-4 rounded-sm bg-amber"></span>
+          <span class="font-semibold tracking-tight">Transcriptor</span>
+        </div>
+        <p class="mt-4 max-w-xs text-sm leading-relaxed text-muted">
+          Private, offline transcription for any audio or video file. Nothing
+          leaves your machine.
+        </p>
+        <p class="mt-4 text-sm text-faint">
+          No cloud. No accounts. No telemetry.
+        </p>
+      </div>
+
+      {
+        cols.map((c) => (
+          <nav class="text-sm">
+            <p class="font-mono text-xs uppercase tracking-wider text-faint">
+              {c.heading}
+            </p>
+            <ul class="mt-4 space-y-2.5">
+              {c.links.map((l) => (
+                <li>
+                  <a href={l.href} class="text-muted hover:text-amber">
+                    {l.label}
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </nav>
+        ))
+      }
+    </div>
+
+    <div
+      class="mt-14 flex flex-col gap-2 border-t border-hairline pt-6 text-xs text-faint sm:flex-row sm:items-center sm:justify-between"
+    >
+      <p>© {new Date().getFullYear()} Transcriptor. Free and open.</p>
+      <p>Runs 100% on your device — your data never leaves it.</p>
+    </div>
+  </div>
+</footer>

@@ -1,0 +1,37 @@
+---
+import "../styles/global.css";
+
+const {
+  title = "Transcriptor — 100% private, offline transcription",
+  description = "Transcribe any audio or video file to timestamped text, entirely on your machine. No cloud, no accounts, no limits. Free and open.",
+} = Astro.props;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="generator" content={Astro.generator} />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:type" content="website" />
+    <meta name="theme-color" content="#0a0a0a" />
+    <script is:inline>
+      // Apply persisted theme before paint to avoid a flash.
+      (function () {
+        try {
+          var light = localStorage.getItem("theme") === "light";
+          if (light) document.documentElement.classList.add("light");
+          var meta = document.querySelector('meta[name="theme-color"]');
+          if (meta) meta.setAttribute("content", light ? "#fafafa" : "#0a0a0a");
+        } catch (e) {}
+      })();
+    </script>
+  </head>
+  <body class="bg-bg text-ink antialiased">
+    <slot />
+  </body>
+</html>

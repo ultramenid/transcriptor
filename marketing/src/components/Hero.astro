@@ -1,0 +1,122 @@
+---
+// Static bar heights + per-bar delays for the ambient waveform. No JS.
+const bars = Array.from({ length: 96 }, (_, i) => {
+  const h = 12 + Math.round(Math.abs(Math.sin(i * 0.7)) * 46);
+  const delay = ((i * 53) % 100) / 100;
+  return { h, delay };
+});
+---
+
+<header
+  class="relative overflow-hidden border-b border-hairline"
+>
+  <!-- ambient waveform motif -->
+  <div
+    aria-hidden="true"
+    class="pointer-events-none absolute inset-x-0 bottom-0 flex h-56 items-end justify-center gap-[3px] opacity-[0.18]"
+  >
+    {
+      bars.map(({ h, delay }) => (
+        <span
+          class="w-[4px] origin-bottom rounded-full bg-amber"
+          style={`height:${h}px;animation:wave 2.8s ease-in-out ${delay}s infinite`}
+        />
+      ))
+    }
+  </div>
+  <div
+    aria-hidden="true"
+    class="pointer-events-none absolute -top-40 left-1/2 h-96 w-[46rem] -translate-x-1/2 rounded-full bg-amber/10 blur-3xl"
+  >
+  </div>
+
+  <nav
+    class="relative mx-auto flex max-w-6xl items-center justify-between px-6 py-6"
+  >
+    <div class="flex items-center gap-2.5">
+      <span class="h-4 w-4 rounded-sm bg-amber"></span>
+      <span class="text-[15px] font-semibold tracking-tight">Transcriptor</span>
+    </div>
+    <div class="flex items-center gap-6 text-sm text-muted">
+      <a href="#features" class="hidden hover:text-ink sm:inline">Features</a>
+      <a href="#how" class="hidden hover:text-ink sm:inline">How it works</a>
+      <a href="#faq" class="hidden hover:text-ink sm:inline">FAQ</a>
+      <a
+        href="https://github.com/transcriptor/transcriptor"
+        class="text-ink hover:text-muted">GitHub</a
+      >
+      <button
+        id="theme-toggle"
+        class="ml-1 flex h-8 w-8 items-center justify-center rounded-full border border-hairline text-faint transition-colors hover:text-ink"
+        aria-label="Toggle theme"
+        title="Toggle theme"
+      >
+        <svg class="icon-sun" width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <circle cx="8" cy="8" r="3" stroke="currentColor" stroke-width="1.3" />
+          <path
+            d="M8 1.5v2M8 12.5v2M14.5 8h-2M3.5 8h-2M12.6 3.4l-1.4 1.4M4.8 11.2l-1.4 1.4M12.6 12.6l-1.4-1.4M4.8 4.8L3.4 3.4"
+            stroke="currentColor"
+            stroke-width="1.3"
+            stroke-linecap="round"
+          />
+        </svg>
+        <svg class="icon-moon" width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path
+            d="M13 9.2A5.3 5.3 0 0 1 6.8 3 5.3 5.3 0 1 0 13 9.2Z"
+            stroke="currentColor"
+            stroke-width="1.3"
+          />
+        </svg>
+      </button>
+    </div>
+  </nav>
+
+  <div
+    class="relative mx-auto flex max-w-6xl flex-col items-center px-6 pb-32 pt-20 text-center sm:pt-28"
+  >
+    <p class="timecode mb-6">00:00 · ON DEVICE</p>
+    <h1
+      class="max-w-4xl text-balance text-5xl font-semibold leading-[1.05] tracking-tight sm:text-6xl md:text-7xl"
+    >
+      Transcribe anything.<br class="hidden sm:block" />
+      Share nothing.
+    </h1>
+    <p class="mt-7 max-w-xl text-lg leading-relaxed text-muted">
+      Offline transcription for any audio or video file — accurate, timestamped, and entirely on your device.
+    </p>
+
+    <div class="mt-10 flex flex-wrap items-center justify-center gap-3">
+      <a
+        href="#download"
+        class="inline-flex items-center gap-2.5 rounded-xl bg-amber px-5 py-3 text-sm font-medium text-bg transition-colors hover:bg-amber-soft"
+      >
+        Download
+        <span aria-hidden="true">↓</span>
+      </a>
+      <a
+        href="#how"
+        class="inline-flex items-center rounded-xl border border-hairline bg-elevated px-5 py-3 text-sm font-medium text-ink transition-colors hover:border-amber/50"
+      >
+        See how it works
+      </a>
+    </div>
+    <p class="mt-5 text-sm text-faint">
+      Free · No account · Runs entirely on your device
+    </p>
+  </div>
+
+  <script is:inline>
+    (function () {
+      var btn = document.getElementById("theme-toggle");
+      if (!btn) return;
+      btn.addEventListener("click", function () {
+        var isLight = document.documentElement.classList.toggle("light");
+        try {
+          localStorage.setItem("theme", isLight ? "light" : "dark");
+          var meta = document.querySelector('meta[name="theme-color"]');
+          if (meta) meta.setAttribute("content", isLight ? "#fafafa" : "#0a0a0a");
+        } catch (e) {}
+      });
+    })();
+  </script>
+</header>

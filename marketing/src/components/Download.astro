@@ -1,0 +1,42 @@
+---
+import { downloads } from "../data/downloads";
+---
+
+<section id="download" class="border-y border-hairline bg-panel/40">
+  <div class="mx-auto max-w-6xl px-6 py-24 sm:py-28">
+    <div class="mx-auto max-w-2xl text-center">
+      <p class="timecode mb-4">00:04 · GET IT</p>
+      <h2 class="text-3xl font-semibold tracking-tight sm:text-4xl">
+        Download Transcriptor. It's free.
+      </h2>
+      <p class="mt-4 mx-auto max-w-xl text-muted">
+        One small installer per platform — Whisper models download on demand the
+        first time you transcribe, so the app itself stays lightweight.
+      </p>
+    </div>
+
+    <div class="mt-12 grid gap-4 md:grid-cols-3">
+      {
+        downloads.map((d) => (
+          <a
+            href={d.href}
+            class="group flex flex-col gap-4 rounded-2xl border border-hairline bg-elevated p-6 transition hover:border-amber/50"
+          >
+            <div class="flex items-baseline justify-between">
+              <span class="text-lg font-medium">{d.os}</span>
+              <span class="font-mono text-xs text-amber">{d.size}</span>
+            </div>
+            <div class="space-y-1 text-sm text-muted">
+              <p>{d.file}</p>
+              <p class="text-faint">{d.req}</p>
+            </div>
+            <span class="mt-2 inline-flex items-center gap-1.5 text-sm font-medium text-amber">
+              Download
+              <span class="transition group-hover:translate-x-0.5">→</span>
+            </span>
+          </a>
+        ))
+      }
+    </div>
+  </div>
+</section>

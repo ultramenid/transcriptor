@@ -1,0 +1,49 @@
+---
+// Real sequence — the timecode markers encode the actual order of the flow.
+const steps = [
+  {
+    t: "00:00",
+    title: "Drop your file",
+    body: "Drag any audio or video file onto the home screen. Video? Transcriptor extracts the audio automatically and cleans up after itself.",
+  },
+  {
+    t: "00:02",
+    title: "Pick model & language",
+    body: "Choose a Whisper model (we recommend large-v3-turbo) and a language, or let it auto-detect. Models download once, then live on your disk forever.",
+  },
+  {
+    t: "00:05",
+    title: "Review & export",
+    body: "Watch the transcript stream in live, edit anything, then export to TXT, SRT, VTT, JSON, or a clean article. Timestamps stay frame-exact.",
+  },
+];
+---
+
+<section id="how" class="border-y border-hairline bg-panel/40">
+  <div class="mx-auto max-w-6xl px-6 py-24 sm:py-28">
+    <div class="mx-auto max-w-2xl text-center">
+      <p class="timecode mb-4">00:02 · HOW IT WORKS</p>
+      <h2 class="text-3xl font-semibold tracking-tight sm:text-4xl">
+        Three steps, start to finish.
+      </h2>
+    </div>
+
+    <ol class="mt-14 grid gap-8 md:grid-cols-3">
+      {
+        steps.map((s, i) => (
+          <li class="relative flex flex-col gap-4">
+            <div class="flex items-center gap-3">
+              <span class="timecode">{s.t}</span>
+              <span class="h-px flex-1 bg-hairline" />
+              <span class="font-mono text-xs text-faint">
+                {String(i + 1).padStart(2, "0")}
+              </span>
+            </div>
+            <h3 class="text-xl font-medium">{s.title}</h3>
+            <p class="text-sm leading-relaxed text-muted">{s.body}</p>
+          </li>
+        ))
+      }
+    </ol>
+  </div>
+</section>

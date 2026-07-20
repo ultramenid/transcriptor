@@ -1,0 +1,71 @@
+---
+// Native <details> — no JS. First two answers are settled verbatim copy.
+const faqs = [
+  {
+    q: "How accurate is it?",
+    a: "Transcriptor runs the same Whisper models that power professional cloud transcription — accuracy comes from the model you pick (we recommend large-v3-turbo), and unlike a chatbot, nothing is ever truncated, paraphrased, or dropped.",
+  },
+  {
+    q: "Why not just ask ChatGPT/Claude/Gemini to transcribe?",
+    a: "Chat agents run a speech model in the cloud: your audio leaves your machine, uploads are capped at minutes of audio, timestamps are guessed, output can be silently truncated, and heavy use is metered. Transcriptor is unlimited, free, handles 4-hour videos, emits exact SRT/VTT-synced timestamps, and nothing ever leaves your computer.",
+  },
+  {
+    q: "What languages does it support?",
+    a: "Whisper transcribes over 99 languages and can auto-detect the spoken language. You can also lock a specific language for cleaner results on noisy audio.",
+  },
+  {
+    q: "Is it really fully offline?",
+    a: "Yes. Transcription runs entirely on your own hardware. The only time Transcriptor touches the network is when you choose to download a model — after that, you can go fully offline forever.",
+  },
+  {
+    q: "Which model should I choose?",
+    a: "Models range from tiny (fastest, least accurate) to large-v3. We recommend large-v3-turbo as the best balance of speed and accuracy; distil-large-v3 is the fastest English-only option. Each is offered in Compact, Balanced, or Full quality.",
+  },
+  {
+    q: "Is there any file-length limit?",
+    a: "None. A four-hour video transcribes end to end — nothing is capped, chunked away, or dropped. Longer files simply take longer.",
+  },
+  {
+    q: "Are the subtitle timestamps exact?",
+    a: "Yes. SRT and VTT timestamps align to the media timeline by construction, so captions stay in sync with your video frame for frame.",
+  },
+  {
+    q: "Do you collect any data?",
+    a: "No cloud, no accounts, no telemetry, no analytics. There is nothing to sign up for and nothing phones home. Your transcripts and library live only on your disk.",
+  },
+  {
+    q: "What does it cost?",
+    a: "Nothing. Transcriptor is free — no subscription, no per-minute metering, no paywalled features.",
+  },
+];
+---
+
+<section id="faq" class="mx-auto max-w-3xl px-6 py-24 sm:py-28">
+  <div class="text-center">
+    <p class="timecode mb-4">00:05 · QUESTIONS</p>
+    <h2 class="text-3xl font-semibold tracking-tight sm:text-4xl">
+      Frequently asked.
+    </h2>
+  </div>
+
+  <div class="mt-12 divide-y divide-hairline border-y border-hairline">
+    {
+      faqs.map((f) => (
+        <details class="group py-5">
+          <summary
+            class="flex cursor-pointer list-none items-center justify-between gap-4 text-base font-medium marker:content-none"
+          >
+            {f.q}
+            <span
+              class="shrink-0 text-amber transition group-open:rotate-45"
+              aria-hidden="true"
+            >
+              +
+            </span>
+          </summary>
+          <p class="mt-3 text-sm leading-relaxed text-muted">{f.a}</p>
+        </details>
+      ))
+    }
+  </div>
+</section>

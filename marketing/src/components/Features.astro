@@ -1,0 +1,79 @@
+---
+// Inline SVG icons — no icon library, no runtime JS.
+const features = [
+  {
+    title: "Offline & private",
+    body: "Every byte stays on your device. No cloud, no accounts, no telemetry — ever.",
+    icon: "shield",
+  },
+  {
+    title: "99+ languages",
+    body: "Whisper transcribes speech in over ninety-nine languages, out of the box.",
+    icon: "globe",
+  },
+  {
+    title: "Any file format",
+    body: "MP3, WAV, MP4, MOV, and more. Drop a four-hour video and walk away.",
+    icon: "file",
+  },
+  {
+    title: "Timestamped export",
+    body: "TXT, SRT, VTT, JSON, or a clean article — with frame-exact subtitle sync.",
+    icon: "clock",
+  },
+  {
+    title: "Beautiful native UI",
+    body: "A first-class desktop app on Windows, macOS, and Linux with live progress.",
+    icon: "sparkle",
+  },
+];
+
+const paths: Record<string, string> = {
+  shield: "M12 3l7 3v5c0 4.4-3 8.3-7 10-4-1.7-7-5.6-7-10V6l7-3z",
+  globe: "M12 3a9 9 0 100 18 9 9 0 000-18zM3 12h18M12 3c2.5 2.5 3.8 5.6 3.8 9s-1.3 6.5-3.8 9c-2.5-2.5-3.8-5.6-3.8-9S9.5 5.5 12 3z",
+  file: "M14 3H7a2 2 0 00-2 2v14a2 2 0 002 2h10a2 2 0 002-2V8l-5-5zM14 3v5h5",
+  clock: "M12 7v5l3 2M21 12a9 9 0 11-18 0 9 9 0 0118 0z",
+  sparkle: "M12 3l2 5 5 2-5 2-2 5-2-5-5-2 5-2 2-5z",
+};
+---
+
+<section id="features" class="mx-auto max-w-6xl px-6 py-24 sm:py-28">
+  <div class="mx-auto max-w-2xl text-center">
+    <p class="timecode mb-4">00:01 · WHAT YOU GET</p>
+    <h2 class="text-3xl font-semibold tracking-tight sm:text-4xl">
+      A full transcription studio, running on your own hardware.
+    </h2>
+  </div>
+
+  <div class="mt-14 grid gap-px overflow-hidden rounded-2xl border border-hairline bg-hairline sm:grid-cols-2 lg:grid-cols-3">
+    {
+      features.map((f) => (
+        <div class="flex flex-col gap-4 bg-panel p-7">
+          <span class="inline-flex h-10 w-10 items-center justify-center rounded-lg bg-amber/10 text-amber">
+            <svg
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.6"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d={paths[f.icon]} />
+            </svg>
+          </span>
+          <h3 class="text-lg font-medium">{f.title}</h3>
+          <p class="text-sm leading-relaxed text-muted">{f.body}</p>
+        </div>
+      ))
+    }
+    <div class="flex flex-col justify-center gap-2 bg-panel p-7">
+      <p class="timecode">∞ · NO LIMITS</p>
+      <p class="text-sm leading-relaxed text-muted">
+        No file-length cap. No monthly quota. No cost.
+      </p>
+    </div>
+  </div>
+</section>

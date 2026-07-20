@@ -1,0 +1,584 @@
+// Tauri commands: transcribe, cancel, export, models.
+
+use crate::library::{Library, Work};
+use crate::models::{self, Quant};
+use crate::whisper::Segment;
+use crate::{audio, config};
+use serde::Serialize;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use tauri::{AppHandle, Emitter, Manager, State};
+
+#[derive(Default)]
+pub struct QueueState {
+    cancel_flags: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    processing: Mutex<bool>,
+}
+
+fn app_data_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<std::path::PathBuf, String> {
+    app.path().app_data_dir().map_err(|e| e.to_string())
+}
+
+fn lib_err(_: std::sync::PoisonError<std::sync::MutexGuard<'_, rusqlite::Connection>>) -> String {
+    "library lock poisoned".to_string()
+}
+
+// ---- Models ----
+
+#[derive(Serialize)]
+pub struct ModelVariantWire {
+    quant: Quant,
+    size_bytes: u64,
+    installed: bool,
+}
+
+#[derive(Serialize)]
+pub struct ModelEntryWire {
+    id: String,
+    label: String,
+    speed: String,
+    accuracy: String,
+    languages: String,
+    license: String,
+    variants: Vec<ModelVariantWire>,
+}
+
+#[tauri::command]
+pub fn list_models(app: AppHandle) -> Result<Vec<ModelEntryWire>, String> {
+    let dir = app_data_dir(&app)?;
+    Ok(models::catalog()
+        .into_iter()
+        .map(|m| ModelEntryWire {
+            variants: m
+                .variants
+                .iter()
+                .map(|v| ModelVariantWire {
+                    quant: v.quant,
+                    size_bytes: v.size_bytes,
+                    installed: models::is_installed(&dir, v),
+                })
+                .collect(),
+            id: m.id,
+            label: m.label,
+            speed: m.speed,
+            accuracy: m.accuracy,
+            languages: m.languages,
+            license: m.license,
+        })
+        .collect())
+}
+
+#[tauri::command]
+pub async fn download_model(app: AppHandle, model_id: String, quant: Quant) -> Result<(), String> {
+    let dir = app_data_dir(&app)?;
+    models::download_model(&app, &dir, &model_id, quant).await
+}
+
+#[tauri::command]
+pub fn delete_model(app: AppHandle, model_id: String, quant: Quant) -> Result<(), String> {
+    let dir = app_data_dir(&app)?;
+    models::delete_model(&dir, &model_id, quant)
+}
+
+// ---- Settings ----
+
+#[tauri::command]
+pub fn get_settings(app: AppHandle) -> Result<config::Settings, String> {
+    Ok(config::load(&app_data_dir(&app)?))
+}
+
+#[tauri::command]
+pub fn save_settings(app: AppHandle, settings: config::Settings) -> Result<(), String> {
+    config::save(&app_data_dir(&app)?, &settings)
+}
+
+// ---- Library ----
+
+#[tauri::command]
+pub fn list_recent(lib_state: State<'_, Library>, limit: i64) -> Result<Vec<Work>, String> {
+    let conn = lib_state.0.lock().map_err(lib_err)?;
+    crate::library::list_recent(&conn, limit)
+}
+
+#[tauri::command]
+pub fn list_library(lib_state: State<'_, Library>) -> Result<Vec<Work>, String> {
+    let conn = lib_state.0.lock().map_err(lib_err)?;
+    crate::library::list_all(&conn)
+}
+
+#[tauri::command]
+pub fn search_library(lib_state: State<'_, Library>, query: String) -> Result<Vec<Work>, String> {
+    let conn = lib_state.0.lock().map_err(lib_err)?;
+    crate::library::search(&conn, &query)
+}
+
+#[tauri::command]
+pub fn get_work(lib_state: State<'_, Library>, id: String) -> Result<Option<Work>, String> {
+    let conn = lib_state.0.lock().map_err(lib_err)?;
+    crate::library::get(&conn, &id)
+}
+
+#[tauri::command]
+pub fn delete_work(lib_state: State<'_, Library>, id: String) -> Result<(), String> {
+    let conn = lib_state.0.lock().map_err(lib_err)?;
+    crate::library::delete(&conn, &id)
+}
+
+#[tauri::command]
+pub fn rename_work(app: AppHandle, lib_state: State<'_, Library>, id: String, name: String) -> Result<(), String> {
+    {
+        let conn = lib_state.0.lock().map_err(lib_err)?;
+        crate::library::rename(&conn, &id, &name)?;
+    }
+    let _ = app.emit("queue-updated", ());
+    Ok(())
+}
+
+#[tauri::command]
+pub fn update_transcript(
+    lib_state: State<'_, Library>,
+    id: String,
+    segments: Vec<Segment>,
+) -> Result<(), String> {
+    let conn = lib_state.0.lock().map_err(lib_err)?;
+    crate::library::update_transcript_edit(&conn, &id, &segments)
+}
+
+// ---- Queue / transcription ----
+
+#[tauri::command]
+pub fn enqueue_files(
+    app: AppHandle,
+    lib_state: State<'_, Library>,
+    paths: Vec<String>,
+    model_id: String,
+    quant: Quant,
+    language: Option<String>,
+) -> Result<Vec<String>, String> {
+    enqueue_files_for_test(app, lib_state, paths, model_id, quant, language)
+}
+
+pub fn enqueue_files_for_test<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    lib_state: State<'_, Library>,
+    paths: Vec<String>,
+    model_id: String,
+    quant: Quant,
+    language: Option<String>,
+) -> Result<Vec<String>, String> {
+    let quant_str = serde_json::to_value(quant)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_default();
+    let mut ids = Vec::with_capacity(paths.len());
+    {
+        let conn = lib_state.0.lock().map_err(lib_err)?;
+        for path in &paths {
+            let filename = std::path::Path::new(path)
+                .file_name()
+                .map(|f| f.to_string_lossy().to_string())
+                .unwrap_or_else(|| path.clone());
+            let id = crate::library::create_queued(
+                &conn,
+                &filename,
+                Some(path),
+                Some(&model_id),
+                Some(&quant_str),
+                language.as_deref(),
+            )?;
+            ids.push(id);
+        }
+    }
+    let _ = app.emit("queue-updated", ());
+    start_queue_worker(app);
+    Ok(ids)
+}
+
+pub fn retry_work_for_test<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    lib_state: State<'_, Library>,
+    id: String,
+) -> Result<(), String> {
+    retry_work_impl(app, lib_state, id)
+}
+
+#[tauri::command]
+pub fn retry_work(app: AppHandle, lib_state: State<'_, Library>, id: String) -> Result<(), String> {
+    retry_work_impl(app, lib_state, id)
+}
+
+fn retry_work_impl<R: tauri::Runtime>(app: tauri::AppHandle<R>, lib_state: State<'_, Library>, id: String) -> Result<(), String> {
+    {
+        let conn = lib_state.0.lock().map_err(lib_err)?;
+        crate::library::requeue(&conn, &id)?;
+    }
+    let _ = app.emit("queue-updated", ());
+    start_queue_worker(app);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn cancel_work(
+    lib_state: State<'_, Library>,
+    queue: State<'_, QueueState>,
+    id: String,
+) -> Result<(), String> {
+    let flag = {
+        let flags = queue.cancel_flags.lock().map_err(|_| "queue lock poisoned".to_string())?;
+        flags.get(&id).cloned()
+    };
+    match flag {
+        Some(flag) => {
+            flag.store(true, Ordering::Relaxed);
+            Ok(())
+        }
+        None => {
+            let conn = lib_state.0.lock().map_err(lib_err)?;
+            crate::library::set_status(&conn, &id, "cancelled", None)
+        }
+    }
+}
+
+fn start_queue_worker<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
+    {
+        let queue = app.state::<QueueState>();
+        let mut processing = queue.processing.lock().expect("queue lock poisoned");
+        if *processing {
+            return;
+        }
+        *processing = true;
+    }
+    tauri::async_runtime::spawn(async move {
+        run_queue(&app).await;
+        let queue = app.state::<QueueState>();
+        *queue.processing.lock().expect("queue lock poisoned") = false;
+    });
+}
+
+pub async fn run_queue<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    loop {
+        let next = {
+            let lib_state = app.state::<Library>();
+            let conn = lib_state.0.lock().expect("library lock poisoned");
+            crate::library::next_queued(&conn)
+        };
+        match next {
+            Ok(Some(work)) => process_one(app, work).await,
+            _ => break,
+        }
+    }
+}
+
+async fn process_one<R: tauri::Runtime>(app: &tauri::AppHandle<R>, work: Work) {
+    let cancel_flag = Arc::new(AtomicBool::new(false));
+    {
+        let queue = app.state::<QueueState>();
+        queue
+            .cancel_flags
+            .lock()
+            .expect("queue lock poisoned")
+            .insert(work.id.clone(), cancel_flag.clone());
+    }
+
+    let result = run_transcription(app, &work, cancel_flag).await;
+
+    {
+        let queue = app.state::<QueueState>();
+        queue.cancel_flags.lock().expect("queue lock poisoned").remove(&work.id);
+    }
+
+    if let Err(e) = result {
+        let lib_state = app.state::<Library>();
+        let conn = lib_state.0.lock().expect("library lock poisoned");
+        let status = if e == "cancelled" { "cancelled" } else { "failed" };
+        let error = if e == "cancelled" { None } else { Some(e.as_str()) };
+        let _ = crate::library::set_status(&conn, &work.id, status, error);
+    }
+    let _ = app.emit("queue-updated", ());
+}
+
+async fn run_transcription<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    work: &Work,
+    cancel_flag: Arc<AtomicBool>,
+) -> Result<(), String> {
+    let dir = app_data_dir(app)?;
+    {
+        let lib_state = app.state::<Library>();
+        let conn = lib_state.0.lock().expect("library lock poisoned");
+        crate::library::set_status(&conn, &work.id, "running", None)?;
+    }
+    let _ = app.emit("queue-updated", ());
+
+    let model_id = work.model_id.clone().ok_or("no model selected for this work")?;
+    let quant = match work.quant.as_deref() {
+        Some("compact") => Quant::Compact,
+        Some("balanced") => Quant::Balanced,
+        Some("full") => Quant::Full,
+        _ => Quant::Compact,
+    };
+    let variant = models::find_variant(&model_id, quant).ok_or("unknown model/quant")?;
+    let model_path = models::installed_path(&dir, &variant);
+    if !model_path.is_file() {
+        return Err(format!("model \"{model_id}\" is not downloaded yet"));
+    }
+
+    let source_path = work.source_path.clone().ok_or("work has no source path")?;
+    let input = std::path::Path::new(&source_path);
+    if cancel_flag.load(Ordering::Relaxed) {
+        return Err("cancelled".to_string());
+    }
+
+    let wav_path = audio::extract_to_wav(app, input, cancel_flag.clone()).await?;
+
+    let language = work.language.clone();
+    let app_for_blocking = app.clone();
+    let work_id = work.id.clone();
+    let wav_path_for_blocking = wav_path.clone();
+    let transcribe_result = tokio::task::spawn_blocking(move || {
+        crate::whisper::transcribe(
+            &app_for_blocking,
+            &work_id,
+            &model_path,
+            &wav_path_for_blocking,
+            language.as_deref(),
+            cancel_flag,
+        )
+    })
+    .await
+    .map_err(|e| format!("transcription task panicked: {e}"))?;
+
+    let _ = std::fs::remove_file(&wav_path);
+
+    let result = transcribe_result?;
+    let effective_language = result
+        .detected_language
+        .or_else(|| work.language.clone().filter(|l| l != "auto"));
+
+    let lib_state = app.state::<Library>();
+    let conn = lib_state.0.lock().expect("library lock poisoned");
+    crate::library::save_transcript(&conn, &work.id, effective_language.as_deref(), None, &result.segments)
+}
+
+// ---- Export ----
+
+fn format_timecode(t: f64, ms_sep: char) -> String {
+    let total_ms = (t * 1000.0).round().max(0.0) as i64;
+    let ms = total_ms % 1000;
+    let total_s = total_ms / 1000;
+    let s = total_s % 60;
+    let total_m = total_s / 60;
+    let m = total_m % 60;
+    let h = total_m / 60;
+    format!("{h:02}:{m:02}:{s:02}{ms_sep}{ms:03}")
+}
+
+fn render_txt(segments: &[Segment]) -> String {
+    segments.iter().map(|s| s.text.trim()).collect::<Vec<_>>().join("\n")
+}
+
+fn render_srt(segments: &[Segment]) -> String {
+    segments
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            format!(
+                "{}\n{} --> {}\n{}\n",
+                i + 1,
+                format_timecode(s.start, ','),
+                format_timecode(s.end, ','),
+                s.text.trim()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn render_vtt(segments: &[Segment]) -> String {
+    let mut out = String::from("WEBVTT\n\n");
+    for s in segments {
+        out.push_str(&format!(
+            "{} --> {}\n{}\n\n",
+            format_timecode(s.start, '.'),
+            format_timecode(s.end, '.'),
+            s.text.trim()
+        ));
+    }
+    out
+}
+
+/// Reflows segments into paragraphs, breaking on >2s pauses between segments —
+/// good enough proxy for a natural paragraph break without NLP.
+fn render_article(segments: &[Segment]) -> String {
+    let mut paragraphs = Vec::new();
+    let mut current = String::new();
+    let mut prev_end: Option<f64> = None;
+    for s in segments {
+        if let Some(pe) = prev_end {
+            if s.start - pe > 2.0 && !current.is_empty() {
+                paragraphs.push(std::mem::take(&mut current));
+            }
+        }
+        if !current.is_empty() {
+            current.push(' ');
+        }
+        current.push_str(s.text.trim());
+        prev_end = Some(s.end);
+    }
+    if !current.is_empty() {
+        paragraphs.push(current);
+    }
+    paragraphs.join("\n\n")
+}
+
+fn render_export(work: &Work, format: &str) -> Result<String, String> {
+    match format {
+        "txt" => Ok(render_txt(&work.segments)),
+        "srt" => Ok(render_srt(&work.segments)),
+        "vtt" => Ok(render_vtt(&work.segments)),
+        "json" => serde_json::to_string_pretty(&work.segments).map_err(|e| e.to_string()),
+        "article" | "md" => Ok(render_article(&work.segments)),
+        other => Err(format!("unknown export format: {other}")),
+    }
+}
+
+#[tauri::command]
+pub fn preview_export(
+    lib_state: State<'_, Library>,
+    id: String,
+    format: String,
+) -> Result<String, String> {
+    let conn = lib_state.0.lock().map_err(lib_err)?;
+    let work = crate::library::get(&conn, &id)?.ok_or_else(|| "work not found".to_string())?;
+    render_export(&work, &format)
+}
+
+#[tauri::command]
+pub fn export_transcript(
+    app: AppHandle,
+    lib_state: State<'_, Library>,
+    id: String,
+    format: String,
+) -> Result<String, String> {
+    export_transcript_impl(&app, lib_state, id, format)
+}
+
+fn export_transcript_impl<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    lib_state: State<'_, Library>,
+    id: String,
+    format: String,
+) -> Result<String, String> {
+    let work = {
+        let conn = lib_state.0.lock().map_err(lib_err)?;
+        crate::library::get(&conn, &id)?.ok_or_else(|| "work not found".to_string())?
+    };
+    let content = render_export(&work, &format)?;
+
+    let settings = config::load(&app_data_dir(&app)?);
+    let ext = if format == "article" { "md" } else { format.as_str() };
+    let stem = std::path::Path::new(&work.source_filename)
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| work.id.clone());
+    let out_dir = settings
+        .output_dir
+        .map(std::path::PathBuf::from)
+        .or_else(dirs::download_dir)
+        .ok_or_else(|| "no output directory available".to_string())?;
+    std::fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
+    let out_path = out_dir.join(format!("{stem}.{ext}"));
+    std::fs::write(&out_path, content).map_err(|e| e.to_string())?;
+    Ok(out_path.to_string_lossy().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn seg(start: f64, end: f64, text: &str) -> Segment {
+        Segment { start, end, text: text.to_string() }
+    }
+
+    #[test]
+    fn timecode_formats_correctly() {
+        assert_eq!(format_timecode(0.0, ','), "00:00:00,000");
+        assert_eq!(format_timecode(61.234, ','), "00:01:01,234");
+        assert_eq!(format_timecode(3661.5, '.'), "01:01:01.500");
+        assert_eq!(format_timecode(-1.0, ','), "00:00:00,000");
+    }
+
+    #[test]
+    fn render_txt_joins_lines() {
+        let segments = vec![seg(0.0, 1.0, "Hello "), seg(1.0, 2.0, "world.")];
+        assert_eq!(render_txt(&segments), "Hello\nworld.");
+    }
+
+    #[test]
+    fn render_srt_is_well_formed() {
+        let segments = vec![seg(0.0, 1.234, "Hello"), seg(1.5, 3.0, "world")];
+        let srt = render_srt(&segments);
+        let lines: Vec<&str> = srt.lines().collect();
+        assert_eq!(lines[0], "1");
+        assert_eq!(lines[1], "00:00:00,000 --> 00:00:01,234");
+        assert_eq!(lines[2], "Hello");
+        assert_eq!(lines[4], "2");
+        assert_eq!(lines[5], "00:00:01,500 --> 00:00:03,000");
+        assert_eq!(lines[6], "world");
+    }
+
+    #[test]
+    fn render_vtt_has_header_and_timecodes() {
+        let segments = vec![seg(0.0, 1.0, "Hello")];
+        let vtt = render_vtt(&segments);
+        assert!(vtt.starts_with("WEBVTT\n\n"));
+        assert!(vtt.contains("00:00:00.000 --> 00:00:01.000"));
+        assert!(vtt.contains("Hello"));
+    }
+
+    #[test]
+    fn render_article_reflows_on_pauses() {
+        let segments = vec![
+            seg(0.0, 1.0, "First sentence."),
+            seg(1.5, 2.0, "Second sentence."),
+            seg(5.0, 6.0, "After a long pause."),
+        ];
+        let article = render_article(&segments);
+        assert_eq!(article, "First sentence. Second sentence.\n\nAfter a long pause.");
+    }
+
+    fn dummy_work(segments: Vec<Segment>) -> Work {
+        Work {
+            id: "test".to_string(),
+            source_filename: "test.mp3".to_string(),
+            source_path: None,
+            duration_secs: None,
+            language: None,
+            model_id: None,
+            quant: None,
+            status: "done".to_string(),
+            error: None,
+            transcript_text: String::new(),
+            segments,
+            created_at: "0".to_string(),
+            updated_at: "0".to_string(),
+        }
+    }
+
+    #[test]
+    fn render_json_round_trips() {
+        let segments = vec![seg(0.0, 1.0, "Hello"), seg(1.0, 2.0, "world")];
+        let work = dummy_work(segments.clone());
+        let json = render_export(&work, "json").unwrap();
+        let parsed: Vec<Segment> = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].text, "Hello");
+    }
+
+    #[test]
+    fn render_export_rejects_unknown_format() {
+        let work = dummy_work(vec![]);
+        assert!(render_export(&work, "docx").is_err());
+    }
+}

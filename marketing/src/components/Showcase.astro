@@ -1,0 +1,69 @@
+---
+// The showcase video is a static asset rendered by Remotion at build time
+// (marketing/public/showcase.mp4) — no runtime video-player JS.
+// The right panel is a CSS mockup standing in for a real app screenshot.
+const lines = [
+  ["00:00", "Welcome back to the show. Today we're talking about"],
+  ["00:04", "on-device machine learning and why privacy matters."],
+  ["00:09", "Everything you record here stays on your own machine —"],
+  ["00:13", "nothing is ever uploaded, capped, or truncated."],
+];
+---
+
+<section class="mx-auto max-w-6xl px-6 py-24 sm:py-28">
+  <div class="mx-auto max-w-2xl text-center">
+    <p class="timecode mb-4">00:03 · IN ACTION</p>
+    <h2 class="text-3xl font-semibold tracking-tight sm:text-4xl">
+      See it work.
+    </h2>
+  </div>
+
+  <div class="mt-14 grid gap-6 lg:grid-cols-5">
+    <div
+      class="overflow-hidden rounded-2xl border border-hairline bg-black lg:col-span-3"
+    >
+      <video
+        class="aspect-video w-full"
+        autoplay
+        loop
+        muted
+        playsinline
+        preload="metadata"
+      >
+        <source src="/showcase.mp4" type="video/mp4" />
+      </video>
+    </div>
+
+    <!-- CSS mockup of the transcript view (placeholder for a real screenshot) -->
+    <div
+      class="flex flex-col overflow-hidden rounded-2xl border border-hairline bg-elevated lg:col-span-2"
+    >
+      <div class="flex items-center gap-2 border-b border-hairline px-4 py-3">
+        <span class="h-2.5 w-2.5 rounded-full bg-hairline"></span>
+        <span class="h-2.5 w-2.5 rounded-full bg-hairline"></span>
+        <span class="h-2.5 w-2.5 rounded-full bg-hairline"></span>
+        <span class="ml-2 font-mono text-xs text-faint">interview.mp4</span>
+        <span class="timecode ml-auto">large-v3-turbo</span>
+      </div>
+      <div class="flex flex-1 flex-col gap-4 p-5">
+        {
+          lines.map(([t, text]) => (
+            <div class="flex gap-3 text-sm">
+              <span class="timecode shrink-0">{t}</span>
+              <span class="leading-relaxed text-muted">{text}</span>
+            </div>
+          ))
+        }
+        <div class="mt-auto flex gap-2 pt-2">
+          {["TXT", "SRT", "VTT", "JSON"].map((x) => (
+            <span
+              class="rounded-md border border-hairline px-2.5 py-1 font-mono text-[11px] text-faint"
+            >
+              {x}
+            </span>
+          ))}
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
