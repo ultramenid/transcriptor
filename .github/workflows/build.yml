@@ -74,6 +74,14 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: transcriptor-${{ matrix.platform }}
+          # Only ship the final installers, not the AppImage staging dir
+          # (Transcriptor.AppDir/** adds ~200MB of intermediate scaffolding).
           path: |
-            src-tauri/target/release/bundle/**
+            src-tauri/target/release/bundle/macos/**
+            src-tauri/target/release/bundle/dmg/**
+            src-tauri/target/release/bundle/deb/**
+            src-tauri/target/release/bundle/rpm/**
+            src-tauri/target/release/bundle/appimage/*.AppImage
+            src-tauri/target/release/bundle/msi/**
+            src-tauri/target/release/bundle/nsis/**
           if-no-files-found: error
