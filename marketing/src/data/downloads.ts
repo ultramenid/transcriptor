@@ -10,7 +10,7 @@ export type Platform = {
   href: string;
 };
 
-const REPO = 'transcriptor/transcriptor';
+const REPO = 'ultramenid/transcriptor';
 const API_URL = `https://api.github.com/repos/${REPO}/releases/latest`;
 
 // Static fallback used when no release exists yet or the GitHub API is
