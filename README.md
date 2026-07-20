@@ -25,16 +25,11 @@ Strip the quarantine flag once after installing, then it opens normally:
 xattr -cr /Applications/Transcriptor.app
 ```
 
-After that, double-click the app (or `open /Applications/Transcriptor.app`) and it will launch.
-
-> You also need **ffmpeg** on your machine — install it once with Homebrew:
-> ```bash
-> brew install ffmpeg
-> ```
+After that, double-click the app (or `open /Applications/Transcriptor.app`) and it will launch. **ffmpeg is bundled** — no separate install needed.
 
 ### Windows note
 
-The Windows installer is also unsigned, so SmartScreen may warn "Windows protected your PC". Click **More info → Run anyway** to proceed. You'll need **ffmpeg** on your `PATH` — install it via `choco install ffmpeg` or `scoop install ffmpeg`.
+The Windows installer is also unsigned, so SmartScreen may warn "Windows protected your PC". Click **More info → Run anyway** to proceed. **ffmpeg is bundled** — no separate install needed.
 
 ---
 
@@ -58,7 +53,7 @@ The Windows installer is also unsigned, so SmartScreen may warn "Windows protect
 | -------- | ------------------------------------------------------------------ |
 | Frontend | React 19, TypeScript, Vite, Tailwind CSS v4                         |
 | Backend  | Rust, Tauri 2.x, `whisper-rs` (whisper.cpp), `rusqlite` (SQLite FTS5) |
-| Media    | ffmpeg (system-installed, on PATH)                                 |
+| Media    | ffmpeg (bundled as a Tauri sidecar, fetched per-platform in CI)       |
 | Marketing | Astro + Tailwind (separate static site in `marketing/`)           |
 
 ---

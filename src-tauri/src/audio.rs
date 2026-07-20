@@ -1,12 +1,11 @@
-// ffmpeg audio extraction: runs ffmpeg/ffprobe from PATH.
+// ffmpeg audio extraction: bundled sidecar preferred, PATH fallback.
 //
-// No sidecars are bundled (the externalBin entries and src-tauri/binaries
-// were removed so Windows/Linux CI builds don't require per-target binaries
-// at build time). The shell sidecar call below is kept as a no-op fallback
-// hook: if a sidecar is ever bundled again it's picked up automatically,
-// otherwise `app.shell().sidecar()` returns Err and we run ffmpeg/ffprobe
-// directly from PATH. Users need ffmpeg installed (brew/apt/choco/scoop).
-// Both paths produce the same 16kHz mono WAV and honor the same cancel flag.
+// ffmpeg/ffprobe are bundled as Tauri sidecars (tauri.conf.json externalBin
+// + src-tauri/binaries, fetched per-platform in CI from eugeneware/ffmpeg-static
+// so users don't need to install ffmpeg themselves). If the sidecar is ever
+// missing (e.g. a dev running without the binaries staged), we fall back to
+// running `ffmpeg`/`ffprobe` on PATH. Both paths produce the same 16kHz mono
+// WAV and honor the same cancel flag.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;

@@ -12,6 +12,10 @@ dist
 dist-ssr
 *.local
 
+# ffmpeg/ffprobe sidecar binaries are fetched per-platform in CI from
+# eugeneware/ffmpeg-static — never committed (they're large + per-target).
+src-tauri/binaries/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
