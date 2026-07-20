@@ -14,8 +14,6 @@ jobs:
         include:
           - platform: macos-latest
             args: ''
-          - platform: ubuntu-latest
-            args: ''
           - platform: windows-latest
             args: ''
 
@@ -79,9 +77,6 @@ jobs:
           path: |
             src-tauri/target/release/bundle/macos/**
             src-tauri/target/release/bundle/dmg/**
-            src-tauri/target/release/bundle/deb/**
-            src-tauri/target/release/bundle/rpm/**
-            src-tauri/target/release/bundle/appimage/*.AppImage
             src-tauri/target/release/bundle/msi/**
             src-tauri/target/release/bundle/nsis/**
           if-no-files-found: error

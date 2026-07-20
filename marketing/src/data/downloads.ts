@@ -15,6 +15,7 @@ const API_URL = `https://api.github.com/repos/${REPO}/releases/latest`;
 
 // Static fallback used when no release exists yet or the GitHub API is
 // unreachable during a local build. Keeps `pnpm build` working pre-release.
+// Linux is intentionally omitted — only macOS and Windows are built for now.
 const PLACEHOLDER: Platform[] = [
   {
     os: 'Windows',
@@ -32,14 +33,6 @@ const PLACEHOLDER: Platform[] = [
     req: 'macOS 12+, Apple Silicon & Intel',
     href: `https://github.com/${REPO}/releases/latest`,
   },
-  {
-    os: 'Linux',
-    short: 'Linux',
-    file: '.AppImage',
-    size: '—',
-    req: 'glibc 2.31+, 64-bit',
-    href: `https://github.com/${REPO}/releases/latest`,
-  },
 ];
 
 function formatSize(bytes: number): string {
@@ -47,17 +40,14 @@ function formatSize(bytes: number): string {
   return `${mb.toFixed(1)} MB`;
 }
 
-// Match a release asset to one of the three platforms by file extension.
+// Match a release asset to one of the supported platforms by file extension.
 function platformForFile(name: string): Platform | undefined {
   const lower = name.toLowerCase();
-  if (lower.endsWith('.msi')) {
-    return { ...PLACEHOLDER[0], file: '.msi installer' };
+  if (lower.endsWith('.msi') || lower.endsWith('-setup.exe')) {
+    return { ...PLACEHOLDER[0], file: lower.endsWith('.msi') ? '.msi installer' : '.exe installer' };
   }
   if (lower.endsWith('.dmg')) {
     return { ...PLACEHOLDER[1], file: '.dmg (universal)' };
-  }
-  if (lower.endsWith('.appimage')) {
-    return { ...PLACEHOLDER[2], file: '.AppImage' };
   }
   return undefined;
 }
@@ -96,14 +86,14 @@ export async function getDownloads(): Promise<Platform[]> {
     }
 
     // Fill any platforms that had no matching asset with the placeholder so
-    // all three cards always render.
+    // all cards always render.
     for (const placeholder of PLACEHOLDER) {
       if (!found.some((p) => p.short === placeholder.short)) {
         found.push(placeholder);
       }
     }
 
-    // Preserve the Windows / macOS / Linux display order.
+    // Preserve the Windows / macOS display order.
     return PLACEHOLDER.map((p) => found.find((f) => f.short === p.short) ?? p);
   } catch {
     return PLACEHOLDER;
