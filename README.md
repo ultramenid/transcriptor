@@ -10,26 +10,27 @@ Transcriptor wraps [whisper.cpp](https://github.com/ggerganov/whisper.cpp) (via 
 
 ## ⬇️ Download & install
 
-Grab the latest installer from the [releases page](https://github.com/ultramenid/transcriptor/releases/latest):
+Grab the latest installer from the [releases page](https://github.com/ultramenid/transcriptor/releases/latest). **ffmpeg/ffprobe are bundled** — you don't need to install anything else.
 
-- **macOS (Apple Silicon):** `Transcriptor_<version>_aarch64.dmg`
-- **Windows (x64):** `Transcriptor_<version>_x64-setup.exe` (NSIS) or `.msi`
+### macOS (Apple Silicon — M1/M2/M3/M4)
 
-### macOS note (important)
+1. Download **`Transcriptor_<version>_aarch64.dmg`**.
+2. Open the `.dmg` and drag **Transcriptor** into the **Applications** folder.
+3. The app is **not code-signed or notarized** (no Apple Developer Program enrollment yet), so the first time you try to open it macOS will show **"Transcriptor is damaged and can't be opened"**. This is Gatekeeper refusing an unsigned binary — the app is fine. Fix it once by running this in **Terminal**:
+   ```bash
+   xattr -cr /Applications/Transcriptor.app
+   ```
+4. Double-click **Transcriptor** in Applications (or `open /Applications/Transcriptor.app`) to launch it.
 
-The app is **not code-signed or notarized** (no Apple Developer Program enrollment yet). When you download the `.dmg` via a browser, macOS marks it with a quarantine flag and shows **"Transcriptor is damaged and can't be opened"** when you try to launch it. The app is fine — this is Gatekeeper refusing unsigned binaries.
+> No Intel Mac build yet — only Apple Silicon. ffmpeg is bundled inside the app.
 
-Strip the quarantine flag once after installing, then it opens normally:
+### Windows (x64 — Windows 10/11)
 
-```bash
-xattr -cr /Applications/Transcriptor.app
-```
+1. Download **`Transcriptor_<version>_x64-setup.exe`** (NSIS installer) **or** **`Transcriptor_<version>_x64_en-US.msi`** (MSI installer). Either works; pick one.
+2. Run the installer. The installer is **unsigned**, so Windows SmartScreen may warn **"Windows protected your PC"**. Click **More info → Run anyway** to proceed.
+3. After installation, launch **Transcriptor** from the Start menu.
 
-After that, double-click the app (or `open /Applications/Transcriptor.app`) and it will launch. **ffmpeg is bundled** — no separate install needed.
-
-### Windows note
-
-The Windows installer is also unsigned, so SmartScreen may warn "Windows protected your PC". Click **More info → Run anyway** to proceed. **ffmpeg is bundled** — no separate install needed.
+> ffmpeg is bundled inside the app — no `choco`/`scoop` install needed.
 
 ---
 

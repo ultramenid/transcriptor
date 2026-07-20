@@ -88,21 +88,25 @@ jobs:
           body: |
             Transcriptor ${{ github.ref_name }}
 
-            ## Downloads
-            - **macOS (Apple Silicon):** `.dmg`
-            - **Windows (x64):** `.msi` or `.exe` (NSIS)
+            ffmpeg/ffprobe are **bundled** — you don't need to install anything else.
 
-            ffmpeg/ffprobe are **bundled** — no separate install needed.
+            ## macOS (Apple Silicon — M1/M2/M3/M4)
 
-            ### macOS install note
-            The app is not code-signed or notarized. After installing, macOS may
-            show "Transcriptor is damaged and can't be opened". Strip the
-            quarantine flag once and it opens normally:
-            ```bash
-            xattr -cr /Applications/Transcriptor.app
-            ```
+            1. Download **`Transcriptor_${{ github.ref_name }}_aarch64.dmg`**.
+            2. Open the `.dmg` and drag **Transcriptor** into **Applications**.
+            3. The app is **not code-signed or notarized**, so the first time you open it macOS will show **"Transcriptor is damaged and can't be opened."** This is Gatekeeper refusing an unsigned binary — the app is fine. Fix it once in **Terminal**:
+               ```bash
+               xattr -cr /Applications/Transcriptor.app
+               ```
+            4. Double-click **Transcriptor** in Applications to launch it.
 
-            ### Windows install note
-            The installer is unsigned, so SmartScreen may warn "Windows protected
-            your PC". Click **More info → Run anyway** to proceed.
+            > No Intel Mac build yet — only Apple Silicon. ffmpeg is bundled inside the app.
+
+            ## Windows (x64 — Windows 10/11)
+
+            1. Download **`Transcriptor_${{ github.ref_name }}_x64-setup.exe`** (NSIS) **or** **`Transcriptor_${{ github.ref_name }}_x64_en-US.msi`** (MSI). Either works; pick one.
+            2. Run the installer. The installer is **unsigned**, so SmartScreen may warn **"Windows protected your PC"** — click **More info → Run anyway** to proceed.
+            3. Launch **Transcriptor** from the Start menu.
+
+            > ffmpeg is bundled inside the app — no `choco`/`scoop` install needed.
           generate_release_notes: false
