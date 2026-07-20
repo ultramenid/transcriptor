@@ -4,7 +4,37 @@
 
 Drop a file, pick a model and language, transcribe, review, and export. No cloud, no accounts, no telemetry — your audio never leaves your machine.
 
-Transcriptor wraps [whisper.cpp](https://github.com/ggerganov/whisper.cpp) (via [`whisper-rs`](https://crates.io/crates/whisper-rs)) inside a [Tauri 2](https://tauri.app) + React + TypeScript shell, with [ffmpeg](https://ffmpeg.org) as a sidecar for audio extraction and SQLite for a searchable library.
+Transcriptor wraps [whisper.cpp](https://github.com/ggerganov/whisper.cpp) (via [`whisper-rs`](https://crates.io/crates/whisper-rs)) inside a [Tauri 2](https://tauri.app) + React + TypeScript shell, with [ffmpeg](https://ffmpeg.org) for audio extraction and SQLite for a searchable library.
+
+---
+
+## ⬇️ Download & install
+
+Grab the latest installer from the [releases page](https://github.com/ultramenid/transcriptor/releases/latest):
+
+- **macOS (Apple Silicon):** `Transcriptor_<version>_aarch64.dmg`
+- **Windows (x64):** `Transcriptor_<version>_x64-setup.exe` (NSIS) or `.msi`
+
+### macOS note (important)
+
+The app is **not code-signed or notarized** (no Apple Developer Program enrollment yet). When you download the `.dmg` via a browser, macOS marks it with a quarantine flag and shows **"Transcriptor is damaged and can't be opened"** when you try to launch it. The app is fine — this is Gatekeeper refusing unsigned binaries.
+
+Strip the quarantine flag once after installing, then it opens normally:
+
+```bash
+xattr -cr /Applications/Transcriptor.app
+```
+
+After that, double-click the app (or `open /Applications/Transcriptor.app`) and it will launch.
+
+> You also need **ffmpeg** on your machine — install it once with Homebrew:
+> ```bash
+> brew install ffmpeg
+> ```
+
+### Windows note
+
+The Windows installer is also unsigned, so SmartScreen may warn "Windows protected your PC". Click **More info → Run anyway** to proceed. You'll need **ffmpeg** on your `PATH` — install it via `choco install ffmpeg` or `scoop install ffmpeg`.
 
 ---
 
@@ -28,7 +58,7 @@ Transcriptor wraps [whisper.cpp](https://github.com/ggerganov/whisper.cpp) (via 
 | -------- | ------------------------------------------------------------------ |
 | Frontend | React 19, TypeScript, Vite, Tailwind CSS v4                         |
 | Backend  | Rust, Tauri 2.x, `whisper-rs` (whisper.cpp), `rusqlite` (SQLite FTS5) |
-| Media    | ffmpeg (Tauri sidecar, LGPL build)                                  |
+| Media    | ffmpeg (system-installed, on PATH)                                 |
 | Marketing | Astro + Tailwind (separate static site in `marketing/`)           |
 
 ---

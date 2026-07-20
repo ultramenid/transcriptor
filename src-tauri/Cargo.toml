@@ -1,6 +1,6 @@
 [package]
 name = "transcriptor"
-version = "0.1.0"
+version = "0.1.1"
 description = "Native, offline audio/video transcription"
 authors = ["you"]
 edition = "2021"
