@@ -1,4 +1,5 @@
-# Rendered by Remotion at build time — regenerated, not committed.
-public/showcase.mp4
+# Rendered locally with `pnpm render` and committed as a static asset —
+# Remotion's headless Chrome can't run on Vercel's managed build image
+# (missing libnspr4.so / libnss3 etc.), so we don't render on deploy.
 dist/
 .astro/

@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "astro dev",
     "render": "remotion render remotion/index.ts Showcase public/showcase.mp4",
-    "build": "pnpm run render && astro build",
+    "build": "astro build",
     "preview": "astro preview"
   },
   "dependencies": {
