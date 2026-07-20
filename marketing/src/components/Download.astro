@@ -1,5 +1,7 @@
 ---
-import { downloads } from "../data/downloads";
+import { getDownloads } from "../data/downloads";
+
+const downloads = await getDownloads();
 ---
 
 <section id="download" class="border-y border-hairline bg-panel/40">
