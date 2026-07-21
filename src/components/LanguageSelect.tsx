@@ -79,12 +79,12 @@ export default function LanguageSelect({
         aria-expanded={open}
         aria-label="Language"
         className={`flex w-full items-center gap-1.5 text-left outline-none transition-colors enabled:hover:bg-panel-2 disabled:cursor-default ${
-          compact ? "px-2 py-1" : "gap-3 px-4 py-2.5"
+          compact ? "rounded-md px-2.5 py-1.5" : "gap-3 px-4 py-2.5"
         }`}
       >
         {compact ? (
           <>
-            <span className={`min-w-0 flex-1 truncate text-xs ${disabled ? "opacity-50" : "text-ink"}`}>
+            <span className={`min-w-0 flex-1 truncate text-[13px] ${disabled ? "opacity-50" : "text-ink"}`}>
               {current.label}
             </span>
             {!disabled && (

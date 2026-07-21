@@ -34,7 +34,16 @@ const bars = Array.from({ length: 96 }, (_, i) => {
     class="relative mx-auto flex max-w-6xl items-center justify-between px-6 py-6"
   >
     <div class="flex items-center gap-2.5">
-      <span class="h-4 w-4 rounded-sm bg-amber"></span>
+      <!-- App mark — waveform becoming text lines, same as the product icon. -->
+      <svg viewBox="229 262 566 500" class="h-4 w-auto text-amber" fill="currentColor" aria-hidden="true">
+        <rect x="229" y="412" width="52" height="200" rx="26"></rect>
+        <rect x="313" y="302" width="52" height="420" rx="26"></rect>
+        <rect x="397" y="357" width="52" height="310" rx="26"></rect>
+        <rect x="481" y="262" width="52" height="500" rx="26"></rect>
+        <rect x="583" y="386" width="212" height="52" rx="26"></rect>
+        <rect x="583" y="486" width="148" height="52" rx="26"></rect>
+        <rect x="583" y="586" width="184" height="52" rx="26"></rect>
+      </svg>
       <span class="text-[15px] font-semibold tracking-tight">Transcriptor</span>
     </div>
     <div class="flex items-center gap-6 text-sm text-muted">

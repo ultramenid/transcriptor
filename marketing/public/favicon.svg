@@ -1,0 +1,16 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <!-- Transcriptor app icon — waveform becoming lines of text, monochrome. -->
+  <rect width="1024" height="1024" rx="230" fill="#0c0c0c"/>
+  <rect x="14" y="14" width="996" height="996" rx="222" fill="none" stroke="#3a3a3a" stroke-width="4"/>
+  <g fill="#f4f4f4">
+    <!-- waveform -->
+    <rect x="229" y="412" width="52" height="200" rx="26"/>
+    <rect x="313" y="302" width="52" height="420" rx="26"/>
+    <rect x="397" y="357" width="52" height="310" rx="26"/>
+    <rect x="481" y="262" width="52" height="500" rx="26"/>
+    <!-- text lines -->
+    <rect x="583" y="386" width="212" height="52" rx="26"/>
+    <rect x="583" y="486" width="148" height="52" rx="26"/>
+    <rect x="583" y="586" width="184" height="52" rx="26"/>
+  </g>
+</svg>

@@ -63,7 +63,7 @@ interface Props {
   onAddCustom: (srcPath: string, label: string, languages: string) => void;
 }
 
-const GRID = "grid grid-cols-[minmax(0,1fr)_5.5rem_8rem_8.5rem_6rem] items-center gap-x-3";
+const GRID = "grid grid-cols-[minmax(0,1fr)_4.5rem_7rem_7.5rem_6rem] items-center gap-x-3";
 
 export default function Models({
   models,
@@ -129,7 +129,7 @@ export default function Models({
                   {v.installed && (
                     <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-ink" title="Installed" />
                   )}
-                  <span className="truncate text-sm font-medium text-ink">{m.label}</span>
+                  <span className="truncate text-sm font-medium text-ink" title={m.label}>{m.label}</span>
                   {m.id === "large-v3-turbo" && <Tag>Recommended</Tag>}
                   {isCustom && <Tag>Custom</Tag>}
                   {m.languages === "English only" && <Tag>English</Tag>}

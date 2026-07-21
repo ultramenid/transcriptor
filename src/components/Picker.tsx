@@ -54,9 +54,9 @@ export default function PickerCell({
           aria-haspopup="listbox"
           aria-expanded={open}
           aria-label={label}
-          className="flex w-full items-center gap-1.5 px-2 py-1 text-left outline-none transition-colors enabled:hover:bg-panel-2 disabled:cursor-default"
+          className="flex w-full items-center gap-1.5 rounded-md px-2.5 py-1.5 text-left outline-none transition-colors enabled:hover:bg-panel-2 disabled:cursor-default"
         >
-          <span className={`min-w-0 flex-1 truncate text-xs ${disabled ? "opacity-50" : "text-ink"}`}>
+          <span className={`min-w-0 flex-1 truncate text-[13px] ${disabled ? "opacity-50" : "text-ink"}`}>
             {current?.label ?? "—"}
           </span>
           {current?.hint && (

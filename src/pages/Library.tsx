@@ -261,18 +261,18 @@ export default function Library({
               </div>
             ) : (
               <>
-                <div className="grid grid-cols-[1.5rem_minmax(0,1fr)_8rem_6rem_1.25rem] items-center gap-x-2 border-b border-border-subtle/60 px-3 py-1.5">
+                <div className="grid grid-cols-[1.5rem_minmax(0,1fr)_11rem_10rem_1.5rem] items-center gap-x-3 border-b border-border-subtle/60 px-3 py-2">
                   <span className="font-mono text-[9px] uppercase tracking-[0.2em] text-ink-faint" />
                   <span className="font-mono text-[9px] uppercase tracking-[0.2em] text-ink-faint">File</span>
-                  <span className="font-mono text-[9px] uppercase tracking-[0.2em] text-ink-faint">Model</span>
-                  <span className="font-mono text-[9px] uppercase tracking-[0.2em] text-ink-faint">Language</span>
+                  <span className="pl-2.5 font-mono text-[9px] uppercase tracking-[0.2em] text-ink-faint">Model</span>
+                  <span className="pl-2.5 font-mono text-[9px] uppercase tracking-[0.2em] text-ink-faint">Language</span>
                   <span />
                 </div>
                 {pending.map((p, i) => {
                   return (
                     <div
                       key={p.path}
-                      className="group grid grid-cols-[1.5rem_minmax(0,1fr)_8rem_6rem_1.25rem] items-center gap-x-2 border-b border-border-subtle/60 px-3"
+                      className="group grid grid-cols-[1.5rem_minmax(0,1fr)_11rem_10rem_1.5rem] items-center gap-x-3 border-b border-border-subtle/60 px-3 py-1.5"
                     >
                       <span className="text-right font-mono text-[10px] tabular-nums text-ink-faint">
                         {i + 1}

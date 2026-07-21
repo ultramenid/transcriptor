@@ -21,16 +21,16 @@ function ThemeToggle() {
       title={light ? "Dark" : "Light"}
     >
       {light ? (
-        <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
-          <path d="M13 9.2A5.3 5.3 0 0 1 6.8 3 5.3 5.3 0 1 0 13 9.2Z" stroke="currentColor" strokeWidth="1.3" />
+        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden>
+          <path d="M13 9.2A5.3 5.3 0 0 1 6.8 3 5.3 5.3 0 1 0 13 9.2Z" fill="currentColor" />
         </svg>
       ) : (
-        <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
-          <circle cx="8" cy="8" r="3" stroke="currentColor" strokeWidth="1.3" />
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
+          <circle cx="8" cy="8" r="3" fill="currentColor" />
           <path
             d="M8 1.5v2M8 12.5v2M14.5 8h-2M3.5 8h-2M12.6 3.4l-1.4 1.4M4.8 11.2l-1.4 1.4M12.6 12.6l-1.4-1.4M4.8 4.8L3.4 3.4"
             stroke="currentColor"
-            strokeWidth="1.3"
+            strokeWidth="1.5"
             strokeLinecap="round"
           />
         </svg>
@@ -60,11 +60,16 @@ export default function Header({ view, onGo, onBack }: Props) {
         </button>
       ) : (
         <button onClick={onBack} className="flex items-center gap-2.5" aria-label="Library">
-          <span className="flex h-4 items-end gap-[2px]" aria-hidden>
-            <span className="h-2 w-[3px] rounded-full bg-ink" />
-            <span className="h-4 w-[3px] rounded-full bg-ink" />
-            <span className="h-2.5 w-[3px] rounded-full bg-ink" />
-          </span>
+          {/* App mark — waveform becoming text lines, same as the product icon. */}
+          <svg viewBox="229 262 566 500" className="h-4 w-auto text-ink" fill="currentColor" aria-hidden>
+            <rect x="229" y="412" width="52" height="200" rx="26" />
+            <rect x="313" y="302" width="52" height="420" rx="26" />
+            <rect x="397" y="357" width="52" height="310" rx="26" />
+            <rect x="481" y="262" width="52" height="500" rx="26" />
+            <rect x="583" y="386" width="212" height="52" rx="26" />
+            <rect x="583" y="486" width="148" height="52" rx="26" />
+            <rect x="583" y="586" width="184" height="52" rx="26" />
+          </svg>
           <span className="font-mono text-[11px] font-medium uppercase tracking-[0.25em] text-ink">
             Transcriptor
           </span>
