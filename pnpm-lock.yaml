@@ -86,6 +86,28 @@ importers:
         specifier: ^4.1.0
         version: 4.3.3
 
+  promo:
+    dependencies:
+      '@remotion/cli':
+        specifier: ^4.0.362
+        version: 4.0.491(csso@5.0.5)(lightningcss@1.32.0)(postcss@8.5.19)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
+      react:
+        specifier: ^19.1.0
+        version: 19.2.7
+      react-dom:
+        specifier: ^19.1.0
+        version: 19.2.7(react@19.2.7)
+      remotion:
+        specifier: ^4.0.362
+        version: 4.0.491(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
+    devDependencies:
+      '@types/react':
+        specifier: ^19.1.8
+        version: 19.2.17
+      typescript:
+        specifier: ~5.8.3
+        version: 5.8.3
+
 packages:
 
   '@astrojs/compiler@2.13.1':

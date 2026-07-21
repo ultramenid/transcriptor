@@ -1,0 +1,19 @@
+{
+  "name": "promo",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "studio": "remotion studio src/index.ts",
+    "render": "remotion render src/index.ts TranscribeFlow out/transcribe-flow.mp4"
+  },
+  "dependencies": {
+    "@remotion/cli": "^4.0.362",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "remotion": "^4.0.362"
+  },
+  "devDependencies": {
+    "@types/react": "^19.1.8",
+    "typescript": "~5.8.3"
+  }
+}

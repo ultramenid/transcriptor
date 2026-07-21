@@ -1,6 +1,7 @@
 packages:
   - '.'
   - 'marketing'
+  - 'promo'
 
 allowBuilds:
   esbuild: true
