@@ -83,7 +83,9 @@ async fn main() {
     // Copy the model into the temp models dir so commands.rs finds it.
     let models_dir = app_data_dir.join("models");
     std::fs::create_dir_all(&models_dir).expect("create models dir");
-    let installed_model = models_dir.join("ggml-tiny-q5_1.bin");
+    // Quantization was collapsed to a single Full variant per model, so the
+    // resolver looks for the plain filename — not the old -q5_1 one.
+    let installed_model = models_dir.join("ggml-tiny.bin");
     std::fs::copy(&model_path, &installed_model).expect("copy model");
 
     // Copy source WAVs to a temp location.
@@ -98,6 +100,19 @@ async fn main() {
         .plugin(tauri_plugin_shell::init())
         .build(mock_context(noop_assets()))
         .expect("mock app build");
+
+    // commands.rs resolves the models dir through Tauri's path API, which under
+    // the mock runtime is NOT our temp dir — stage the model where the queue
+    // worker will actually look for it.
+    {
+        let resolved = app.path().app_data_dir().expect("resolve app data dir");
+        let resolved_models = resolved.join("models");
+        std::fs::create_dir_all(&resolved_models).expect("create resolved models dir");
+        std::fs::copy(&installed_model, resolved_models.join("ggml-tiny.bin"))
+            .expect("stage model where commands.rs looks");
+    }
+
+    transcriptor_lib::logs::init(&app_data_dir);
 
     {
         let conn = transcriptor_lib::library::open(&app_data_dir).expect("open library");

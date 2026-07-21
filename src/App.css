@@ -110,6 +110,17 @@ input:where(:not([type]), [type="text"], [type="search"]):focus-visible {
   }
 }
 
+/* Indeterminate progress sweep — shown while ffmpeg extracts audio, before
+   whisper reports a real percentage. */
+@keyframes sweep {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(400%);
+  }
+}
+
 /* Respect reduced motion: kill ambient animation + the running-status pulse. */
 @media (prefers-reduced-motion: reduce) {
   *,

@@ -14,11 +14,45 @@ const EXPORT_FORMATS = ["txt", "srt", "vtt", "json", "article"] as const;
 // The dialog resets from `initial` to the real pending selection on open.
 const PLACEHOLDER_SELECTION: RerunSelection = { modelId: "", quant: "full", language: "auto" };
 
+const REDUCED_MOTION =
+  typeof window !== "undefined" && !!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+
+// whisper hands over a whole 30 s chunk at once, so segments would otherwise
+// blink in as finished blocks. Typing the newest one out makes the live pass
+// read like the words are being written into the timeline as the playhead
+// crosses them. Capped at ~60 ticks so a long segment still lands in ~1 s.
+function LiveText({ text }: { text: string }) {
+  const [shown, setShown] = useState(REDUCED_MOTION ? text.length : 0);
+  useEffect(() => {
+    if (REDUCED_MOTION) {
+      setShown(text.length);
+      return;
+    }
+    setShown(0);
+    const step = Math.max(1, Math.ceil(text.length / 60));
+    const id = setInterval(() => {
+      setShown((n) => {
+        if (n >= text.length) {
+          clearInterval(id);
+          return n;
+        }
+        return n + step;
+      });
+    }, 16);
+    return () => clearInterval(id);
+  }, [text]);
+  return <>{text.slice(0, shown)}</>;
+}
+
 export default function Transcript({ workId, onDelete }: { workId: string; onDelete: () => void }) {
   const [work, setWork] = useState<Work | null>(null);
   const [liveSegments, setLiveSegments] = useState<Segment[]>([]);
   const [editedSegments, setEditedSegments] = useState<Segment[] | null>(null);
   const [progress, setProgress] = useState(0);
+  // Real waveform of the decoded audio, pushed once the WAV is ready — i.e.
+  // before any text exists. Live only; a reopened work falls back to the
+  // transcript-derived wave.
+  const [audio, setAudio] = useState<{ durationSecs: number; peaks: number[] } | null>(null);
   const [view, setView] = useState<"timestamped" | "article">("timestamped");
   const [exportMsg, setExportMsg] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -79,6 +113,7 @@ export default function Transcript({ workId, onDelete }: { workId: string; onDel
     setLiveSegments([]);
     setEditedSegments(null);
     setProgress(0);
+    setAudio(null);
     setPlaying(false);
     setCurrentTime(0);
     loadWork();
@@ -87,6 +122,13 @@ export default function Transcript({ workId, onDelete }: { workId: string; onDel
       if (e.payload.workId !== workId) return;
       setLiveSegments((prev) => [...prev, e.payload.segment]);
     });
+    const unlistenAudio = listen<{ workId: string; durationSecs: number; peaks: number[] }>(
+      "transcribe-audio",
+      (e) => {
+        if (e.payload.workId !== workId) return;
+        setAudio({ durationSecs: e.payload.durationSecs, peaks: e.payload.peaks });
+      },
+    );
     const unlistenProgress = listen<{ workId: string; progress: number }>("transcribe-progress", (e) => {
       if (e.payload.workId !== workId) return;
       setProgress(e.payload.progress);
@@ -94,6 +136,7 @@ export default function Transcript({ workId, onDelete }: { workId: string; onDel
     const unlistenQueue = listen("queue-updated", loadWork);
     return () => {
       unlistenSeg.then((f) => f());
+      unlistenAudio.then((f) => f());
       unlistenProgress.then((f) => f());
       unlistenQueue.then((f) => f());
     };
@@ -133,6 +176,16 @@ export default function Transcript({ workId, onDelete }: { workId: string; onDel
     return () => clearInterval(id);
   }, [isRunning]);
 
+  // Two phases the user can feel: ffmpeg decoding the audio (no percentage to
+  // report yet), then whisper working through 30 s chunks.
+  const preparing = isRunning && !audio && progress === 0 && segments.length === 0;
+  const queued = work?.status === "queued";
+  // Rough ETA from the run's own pace. Suppressed early — chunk-granular
+  // progress makes the first estimates wildly wrong.
+  const remaining = !preparing && progress >= 20 && elapsed > 0
+    ? (elapsed / progress) * (100 - progress)
+    : null;
+
   // Subtitle-edit selection. While transcribing, the selection auto-follows
   // the live (last) subtitle so the waveform block tracks progress. When done,
   // the clicked row is selected; clicking the waveform selects the subtitle
@@ -158,11 +211,12 @@ export default function Transcript({ workId, onDelete }: { workId: string; onDel
     return idx;
   })();
 
+  // One source of truth for the active subtitle: `selectedIndex`. Playback
+  // writes into it (below) rather than shadowing it, so pausing leaves the
+  // selection on the subtitle that was playing instead of snapping back.
   const selIdx = isRunning && !isSegRerunning
     ? segments.length ? liveIdx : -1
-    : playing
-      ? playingIndex
-      : segments.length ? Math.min(selectedIndex, segments.length - 1) : -1;
+    : segments.length ? Math.min(selectedIndex, segments.length - 1) : -1;
   const selection = selIdx >= 0 ? { start: segments[selIdx].start, end: segments[selIdx].end } : null;
 
   function togglePlay() {
@@ -184,9 +238,11 @@ export default function Transcript({ workId, onDelete }: { workId: string; onDel
     }
   }, [segments.length, isRunning]);
 
-  // Follow the playing subtitle as audio plays.
+  // Follow the playing subtitle as audio plays: it becomes the selection, and
+  // the row scrolls into view.
   useEffect(() => {
     if (!playing || playingIndex < 0) return;
+    setSelectedIndex(playingIndex);
     const el = gridRef.current?.querySelector(`[data-idx="${playingIndex}"]`);
     el?.scrollIntoView({ block: "nearest" });
   }, [playingIndex, playing]);
@@ -212,9 +268,9 @@ export default function Transcript({ workId, onDelete }: { workId: string; onDel
       }
       if (segments.length === 0) return;
       e.preventDefault();
-      // Step from what the user currently sees as active: the playing subtitle
-      // while audio runs, the selected one otherwise.
-      const base = playing && playingIndex >= 0 ? playingIndex : Math.min(selectedIndex, segments.length - 1);
+      // Step from what the user currently sees as active — which tracks
+      // playback too, so arrows work mid-playback without a second code path.
+      const base = Math.min(selectedIndex, segments.length - 1);
       const next = Math.max(0, Math.min(segments.length - 1, base + (e.key === "ArrowDown" ? 1 : -1)));
       setSelectedIndex(next);
       if (srcUrl) seekTo(segments[next].start);
@@ -224,7 +280,7 @@ export default function Transcript({ workId, onDelete }: { workId: string; onDel
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [isRunning, srcUrl, togglePlay, segments, playing, playingIndex, selectedIndex]);
+  }, [isRunning, srcUrl, togglePlay, segments, selectedIndex]);
 
   async function doCancel() {
     await invoke("cancel_work", { id: workId });
@@ -366,11 +422,12 @@ export default function Transcript({ workId, onDelete }: { workId: string; onDel
             </div>
           </div>
 
-          {view === "timestamped" && (work?.durationSecs != null || segments.length > 0) && (
+          {view === "timestamped" && (work?.durationSecs != null || segments.length > 0 || isRunning) && (
             <div className="sticky top-0 z-20 -mx-1 bg-bg/95 px-1 pb-3 pt-1 backdrop-blur">
               <Waveform
-                durationSecs={work?.durationSecs ?? null}
+                durationSecs={audio?.durationSecs ?? work?.durationSecs ?? null}
                 segments={segments}
+                peaks={audio?.peaks ?? null}
                 progress={progress}
                 running={isRunning && !isSegRerunning}
                 currentTime={!isRunning || isSegRerunning ? currentTime : null}
@@ -426,6 +483,10 @@ export default function Transcript({ workId, onDelete }: { workId: string; onDel
                           }
                         }}
                         onFocus={() => setSelectedIndex(i)}
+                        // An hour of audio is thousands of rows; skip painting
+                        // the off-screen ones. `auto` remembers each row's real
+                        // height once measured, so the scrollbar stays honest.
+                        style={{ contentVisibility: "auto", containIntrinsicSize: "auto 2.4rem" }}
                         onKeyDown={(e) => {
                           // Arrows are handled globally (selection + seek).
                           if (isRunning) return;
@@ -462,16 +523,31 @@ export default function Transcript({ workId, onDelete }: { workId: string; onDel
                         <span className="px-2 py-2.5 text-right font-mono text-[11px] tabular-nums text-ink-faint">
                           {(s.end - s.start).toFixed(2)}
                         </span>
-                        <p
-                          className={`px-3 py-2 text-sm leading-snug text-ink outline-none ${
-                            isLive || isRerunning ? "animate-pulse motion-reduce:animate-none" : ""
-                          }`}
-                          contentEditable={work?.status === "done"}
-                          suppressContentEditableWarning
-                          onBlur={(e) => editSegment(i, e.currentTarget.textContent ?? "")}
-                        >
-                          {s.text}
-                        </p>
+                        {/* The caret is a SIBLING of the editable <p>, never a
+                           child: a contentEditable element whose children React
+                           tracks as an array can throw NotFoundError once the
+                           browser rewrites the DOM during editing, which
+                           unmounts the tree and blanks the window. One text
+                           child keeps React on the crash-proof setTextContent
+                           path. */}
+                        <div className="flex items-baseline gap-1 px-3 py-2">
+                          <p
+                            className={`min-w-0 flex-1 text-sm leading-snug text-ink outline-none ${
+                              isRerunning ? "animate-pulse motion-reduce:animate-none" : ""
+                            }`}
+                            contentEditable={work?.status === "done"}
+                            suppressContentEditableWarning
+                            onBlur={(e) => editSegment(i, e.currentTarget.textContent ?? "")}
+                          >
+                            {isLive ? <LiveText text={s.text} /> : s.text}
+                          </p>
+                          {isLive && (
+                            <span
+                              aria-hidden
+                              className="h-[0.9em] w-[2px] shrink-0 self-center bg-ink animate-pulse motion-reduce:animate-none"
+                            />
+                          )}
+                        </div>
                         <div className="relative flex items-start justify-end pr-2 pt-1.5">
                           {isRerunning ? (
                             <span className="flex items-center gap-1.5 py-0.5 font-mono text-[9px] uppercase tracking-[0.1em] text-ink-muted">
@@ -541,16 +617,35 @@ export default function Transcript({ workId, onDelete }: { workId: string; onDel
       )}
 
       {/* Transport bar — the one instrument strip for everything operational. */}
-      <footer className="flex h-12 shrink-0 items-center gap-4 border-t border-border-subtle bg-panel px-4">
+      <footer className="relative flex h-12 shrink-0 items-center gap-4 border-t border-border-subtle bg-panel px-4">
+        {isRunning && !isSegRerunning && (
+          // Progress rail on the footer's top edge: indeterminate sweep while
+          // ffmpeg extracts audio, determinate fill once whisper reports chunks.
+          <div className="absolute inset-x-0 -top-px h-0.5 overflow-hidden bg-border-subtle/60">
+            {preparing ? (
+              <div
+                className={`h-full w-1/4 bg-ink/70 ${queued ? "opacity-40" : "animate-[sweep_1.6s_ease-in-out_infinite] motion-reduce:animate-none"}`}
+              />
+            ) : (
+              <div
+                className="h-full bg-ink transition-[width] duration-500 ease-out"
+                style={{ width: `${Math.max(1, progress)}%` }}
+              />
+            )}
+          </div>
+        )}
         {isRunning && !isSegRerunning ? (
           <>
             <span className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.15em] text-ink-faint">
               <span className="h-1.5 w-1.5 rounded-full bg-ink animate-pulse motion-reduce:animate-none" aria-hidden />
-              Transcribing
+              {queued ? "Queued" : preparing ? "Reading audio" : "Transcribing"}
             </span>
-            <span className="font-mono text-sm tabular-nums text-ink">{Math.round(progress)}%</span>
+            {!preparing && (
+              <span className="font-mono text-sm tabular-nums text-ink">{Math.round(progress)}%</span>
+            )}
             <span className="font-mono text-[11px] tabular-nums text-ink-faint">
               {segments.length} segments · {formatDuration(elapsed)}
+              {remaining != null ? ` · ~${formatDuration(remaining)} left` : ""}
             </span>
             <button onClick={doCancel} className={`ml-auto ${transportBtn}`}>
               Cancel

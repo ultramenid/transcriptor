@@ -24,17 +24,17 @@ async fn has_audio_stream<R: tauri::Runtime>(app: &tauri::AppHandle<R>, input: &
     ];
     let input_str = input.to_string_lossy().to_string();
 
-    let (success, code, stdout, stderr) = match app.shell().sidecar("ffprobe") {
-        Ok(cmd) => {
-            let out = cmd
-                .args(args)
-                .arg(input_str)
-                .output()
-                .await
-                .map_err(|e| format!("ffprobe failed to run: {e}"))?;
-            (out.status.success(), out.status.code(), out.stdout, out.stderr)
-        }
-        Err(_) => {
+    // Resolving the sidecar can succeed while *running* it fails (missing from
+    // the bundle, not executable, wrong arch). Treat both as "no sidecar" and
+    // fall through to PATH rather than failing the whole transcription.
+    let sidecar_out = match app.shell().sidecar("ffprobe") {
+        Ok(cmd) => cmd.args(args).arg(&input_str).output().await.ok(),
+        Err(_) => None,
+    };
+
+    let (success, code, stdout, stderr) = match sidecar_out {
+        Some(out) => (out.status.success(), out.status.code(), out.stdout, out.stderr),
+        None => {
             let mut cmd = tokio::process::Command::new("ffprobe");
             cmd.args(args).arg(input).stdout(Stdio::piped()).stderr(Stdio::piped());
             let out = cmd
@@ -81,15 +81,18 @@ fn spawn_ffmpeg<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     args: Vec<String>,
 ) -> Result<(FfmpegKill, tokio::sync::mpsc::Receiver<CommandEvent>), String> {
-    match app.shell().sidecar("ffmpeg") {
-        Ok(cmd) => {
-            let (rx, child) = cmd
-                .args(args)
-                .spawn()
-                .map_err(|e| format!("ffmpeg failed to start: {e}"))?;
-            Ok((FfmpegKill::Sidecar(child), rx))
-        }
-        Err(_) => {
+    // Same fallback rule as ffprobe: a sidecar that resolves but won't spawn is
+    // no better than a missing one — try PATH before giving up.
+    let spawned = app
+        .shell()
+        .sidecar("ffmpeg")
+        .ok()
+        .and_then(|cmd| cmd.args(&args).spawn().ok());
+
+    match spawned {
+        Some((rx, child)) => Ok((FfmpegKill::Sidecar(child), rx)),
+        None => {
+            crate::logs::warn("bundled ffmpeg sidecar unavailable, falling back to ffmpeg on PATH");
             let mut cmd = tokio::process::Command::new("ffmpeg");
             cmd.args(&args).stdout(Stdio::piped()).stderr(Stdio::piped());
             let mut child = cmd

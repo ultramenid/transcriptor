@@ -1,6 +1,6 @@
 [package]
 name = "transcriptor"
-version = "0.1.2"
+version = "0.2.0"
 description = "Native, offline audio/video transcription"
 authors = ["you"]
 edition = "2021"
@@ -32,6 +32,8 @@ futures-util = "0.3"
 sha2 = "0.10"
 dirs = "5"
 uuid = { version = "1", features = ["v4"] }
+# Already in the tree via tauri; used only to stamp log lines.
+time = { version = "0.3", features = ["formatting", "local-offset"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 whisper-rs = { version = "0.16", features = ["metal"] }

@@ -30,6 +30,7 @@ function jitter(i: number): number {
 export default function Waveform({
   durationSecs,
   segments,
+  peaks,
   progress,
   running,
   currentTime,
@@ -41,6 +42,7 @@ export default function Waveform({
 }: {
   durationSecs: number | null;
   segments: Segment[];
+  peaks?: number[] | null; // real per-bucket amplitude 0..1, from the decoded audio
   progress: number; // 0..100, only meaningful when running
   running: boolean;
   currentTime?: number | null; // seconds, from audio playback
@@ -70,11 +72,21 @@ export default function Waveform({
     return { major, minor };
   }, [dur]);
 
-  // Amplitude per slot: 0 = silence (rendered as a hairline dot), otherwise a
-  // 30–100% band scaled by the covering segment's words-per-second plus
-  // deterministic jitter. One pass with a segment pointer — both are sorted.
+  // Amplitude per slot. With real peaks from the decoded audio (emitted the
+  // moment the WAV is ready, before the first word arrives) we downsample them;
+  // otherwise — old works transcribed before peaks existed — we fall back to
+  // the transcript-derived approximation below.
   const slots = useMemo(() => {
     if (dur <= 0) return [];
+    if (peaks && peaks.length) {
+      return Array.from({ length: SLOTS }, (_, i) => {
+        const a = Math.floor((i * peaks.length) / SLOTS);
+        const b = Math.max(a + 1, Math.floor(((i + 1) * peaks.length) / SLOTS));
+        let m = 0;
+        for (let k = a; k < b; k++) m = Math.max(m, peaks[k]);
+        return m <= 0.01 ? 0 : Math.max(6, m * 100);
+      });
+    }
     const out: number[] = [];
     let si = 0;
     for (let i = 0; i < SLOTS; i++) {
@@ -90,19 +102,39 @@ export default function Waveform({
       out.push(Math.min(100, 30 + density * 45 + jitter(i) * 30));
     }
     return out;
-  }, [segments, dur]);
+  }, [segments, dur, peaks]);
 
+  // While running the playhead scrubs the timeline rather than counting chunks:
+  // the newest segment's end time is far finer-grained than 30 s chunk progress,
+  // so the line glides across the wave (CSS-eased below) as words land. Chunk
+  // progress is the floor, so it still advances through long silences.
+  const liveHead = segments.length && dur > 0 ? (segments[segments.length - 1].end / dur) * 100 : 0;
   const playhead = running
-    ? Math.min(100, Math.max(0, progress))
+    ? Math.min(100, Math.max(0, Math.max(progress, liveHead)))
     : currentTime != null && dur > 0
       ? Math.min(100, Math.max(0, (currentTime / dur) * 100))
       : null;
+
+  // Scrubbing: pointer-down on the track (or the playhead handle) starts a drag
+  // that seeks continuously and selects the subtitle under the cursor. Pointer
+  // capture keeps the move events flowing even off the track. Disabled while
+  // transcribing — there's nothing to scrub against a live progress bar.
+  //
+  // These MUST stay above the `dur <= 0` early return: duration arrives
+  // mid-render-lifetime (audio event, or the first segment), so a return that
+  // skipped them would change the hook count between renders and React would
+  // throw "rendered more hooks than during the previous render" — taking the
+  // whole app down with it.
+  const trackRef = useRef<HTMLDivElement>(null);
+  const draggingRef = useRef(false);
+  const [dragging, setDragging] = useState(false);
+  const [hoverT, setHoverT] = useState<number | null>(null);
 
   // No duration yet (still probing audio) — show an indeterminate live wave so
   // the panel isn't empty before transcription starts.
   if (dur <= 0) {
     return (
-      <div className="flex h-[8.5rem] items-center gap-[3px] rounded-md border border-border-subtle bg-panel px-3 py-2">
+      <div className="relative flex h-[8.5rem] items-center gap-[3px] rounded-md border border-border-subtle bg-panel px-3 py-2">
         {Array.from({ length: 48 }).map((_, i) => (
           <span
             key={i}
@@ -110,20 +142,17 @@ export default function Waveform({
             className="h-1/2 w-[3px] flex-1 rounded-full bg-ink-faint/60 animate-[wave_3.2s_ease-in-out_infinite] motion-reduce:animate-none"
           />
         ))}
+        {running && (
+          <span className="pointer-events-none absolute inset-x-0 top-3 text-center font-mono text-[10px] uppercase tracking-[0.15em] text-ink-faint">
+            Reading audio
+          </span>
+        )}
       </div>
     );
   }
 
   const pct = (t: number) => `${(t / dur) * 100}%`;
 
-  // Scrubbing: pointer-down on the track (or the playhead handle) starts a drag
-  // that seeks continuously and selects the subtitle under the cursor. Pointer
-  // capture keeps the move events flowing even off the track. Disabled while
-  // transcribing — there's nothing to scrub against a live progress bar.
-  const trackRef = useRef<HTMLDivElement>(null);
-  const draggingRef = useRef(false);
-  const [dragging, setDragging] = useState(false);
-  const [hoverT, setHoverT] = useState<number | null>(null);
   const scrubbing = !running && !!onSeek;
 
   const timeFromX = (clientX: number) => {
@@ -266,18 +295,23 @@ export default function Waveform({
           {slots.map((h, i) => {
             const t = ((i + 0.5) / SLOTS) * dur;
             const inSel = selection != null && t >= selection.start && t <= selection.end;
+            // While transcribing, audio the model hasn't reached yet is drawn
+            // faint — the wave brightens left-to-right as the pass advances.
+            const pending = running && playhead != null && (t / dur) * 100 > playhead;
             return (
               <span
                 key={i}
                 style={{ height: h > 0 ? `${h}%` : "3px" }}
-                className={`min-w-0 flex-1 rounded-full transition-[height] duration-200 ${
+                className={`min-w-0 flex-1 rounded-full transition-[height,background-color] duration-200 ${
                   h === 0
                     ? "bg-border-subtle"
-                    : inSel
-                      ? "bg-ink"
-                      : selection
-                        ? "bg-ink-faint/60"
-                        : "bg-ink-muted"
+                    : pending
+                      ? "bg-ink-faint/25"
+                      : inSel
+                        ? "bg-ink"
+                        : selection
+                          ? "bg-ink-faint/60"
+                          : "bg-ink-muted"
                 }`}
               />
             );
@@ -299,7 +333,7 @@ export default function Waveform({
         {playhead != null && (
           <div
             className={`absolute inset-y-0 z-10 -translate-x-1/2 ${
-              running ? "transition-[left] duration-300 ease-linear" : ""
+              running ? "transition-[left] duration-700 ease-out" : ""
             }`}
             style={{ left: `${playhead}%` }}
           >

@@ -137,6 +137,18 @@ pub fn requeue_with(
     Ok(())
 }
 
+/// Works left mid-flight when the app quit or crashed. The queue only picks up
+/// `queued`, so a `running` row can never resume itself — and the UI offers
+/// Retry only for `failed`, leaving it spinning forever. Requeue them at
+/// startup. Returns how many were recovered.
+pub fn requeue_orphans(conn: &Connection) -> Result<usize, String> {
+    conn.execute(
+        "UPDATE works SET status = 'queued', error = NULL, updated_at = ?1 WHERE status = 'running'",
+        rusqlite::params![now()],
+    )
+    .map_err(|e| e.to_string())
+}
+
 pub fn set_status(conn: &Connection, id: &str, status: &str, error: Option<&str>) -> Result<(), String> {
     conn.execute(
         "UPDATE works SET status = ?2, error = ?3, updated_at = ?4 WHERE id = ?1",
@@ -173,7 +185,7 @@ pub fn save_transcript(
         .join(" ");
     let segments_json = serde_json::to_string(segments).map_err(|e| e.to_string())?;
     conn.execute(
-        "UPDATE works SET status = 'done', language = ?2, duration_secs = ?3,
+        "UPDATE works SET status = 'done', language = ?2, duration_secs = COALESCE(?3, duration_secs),
          transcript_text = ?4, segments_json = ?5, updated_at = ?6 WHERE id = ?1",
         rusqlite::params![id, language, duration_secs, transcript_text, segments_json, now()],
     )
@@ -275,6 +287,22 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("transcriptor-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         open(&dir).unwrap()
+    }
+
+    #[test]
+    fn requeue_orphans_recovers_interrupted_runs() {
+        let conn = temp_db();
+        let running = create_queued(&conn, "a.mp3", None, None, None, None).unwrap();
+        let done = create_queued(&conn, "b.mp3", None, None, None, None).unwrap();
+        set_status(&conn, &running, "running", None).unwrap();
+        save_transcript(&conn, &done, None, Some(3.0), &[]).unwrap();
+
+        assert_eq!(requeue_orphans(&conn).unwrap(), 1);
+        assert_eq!(get(&conn, &running).unwrap().unwrap().status, "queued");
+        // Finished work is untouched, duration included.
+        let done = get(&conn, &done).unwrap().unwrap();
+        assert_eq!(done.status, "done");
+        assert_eq!(done.duration_secs, Some(3.0));
     }
 
     #[test]

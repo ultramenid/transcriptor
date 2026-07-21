@@ -157,6 +157,38 @@ pub fn update_transcript(
     crate::library::update_transcript_edit(&conn, &id, &segments)
 }
 
+// ---- Diagnostics ----
+
+#[tauri::command]
+pub fn read_log(app: AppHandle) -> Result<String, String> {
+    crate::logs::read(&app_data_dir(&app)?)
+}
+
+#[tauri::command]
+pub fn log_path(app: AppHandle) -> Result<String, String> {
+    Ok(crate::logs::path(&app_data_dir(&app)?).to_string_lossy().to_string())
+}
+
+/// Opens the log's folder in Finder/Explorer with the file selected.
+#[tauri::command]
+pub fn reveal_log(app: AppHandle) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let path = crate::logs::path(&app_data_dir(&app)?);
+    if !path.is_file() {
+        return Err("no log file yet".to_string());
+    }
+    app.opener()
+        .reveal_item_in_dir(&path)
+        .map_err(|e| format!("could not open the log folder: {e}"))
+}
+
+/// Frontend crashes land here (see ErrorBoundary) — otherwise a render throw
+/// leaves nothing behind once the window is closed.
+#[tauri::command]
+pub fn log_ui_error(message: String) {
+    crate::logs::error(format!("ui: {message}"));
+}
+
 // ---- Queue / transcription ----
 
 #[tauri::command]
@@ -202,6 +234,7 @@ pub fn enqueue_files_for_test<R: tauri::Runtime>(
             ids.push(id);
         }
     }
+    crate::logs::info(format!("queued {} file(s) with model {model_id}", ids.len()));
     let _ = app.emit("queue-updated", ());
     start_queue_worker(app);
     Ok(ids)
@@ -258,9 +291,38 @@ pub fn rerun_work(
 /// model and replace that segment in place. Runs synchronously on the caller's
 /// thread (a single segment is usually <30s); emits the same segment/progress
 /// events as a full run so the UI can show live progress.
+/// Padding around a re-run range, in seconds. Enough for a clipped syllable,
+/// not enough for a neighbouring word — see the comment in `rerun_segment_impl`.
+const RERUN_PAD_SECS: f64 = 0.4;
+
+fn join_text<'a>(segments: impl Iterator<Item = &'a Segment>) -> String {
+    segments
+        .map(|s| s.text.trim())
+        .filter(|t| !t.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 #[tauri::command]
 pub async fn rerun_segment(
     app: AppHandle,
+    lib_state: State<'_, Library>,
+    id: String,
+    model_id: String,
+    quant: Quant,
+    language: Option<String>,
+    start: f64,
+    end: f64,
+    index: i64,
+) -> Result<(), String> {
+    rerun_segment_impl(app, lib_state, id, model_id, quant, language, start, end, index).await
+}
+
+/// Generic over the runtime so the headless examples (which use Tauri's mock
+/// runtime) can drive the same code the command does.
+#[allow(clippy::too_many_arguments)]
+pub async fn rerun_segment_impl<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     lib_state: State<'_, Library>,
     id: String,
     model_id: String,
@@ -292,8 +354,29 @@ pub async fn rerun_segment(
     }
     let _ = app.emit("queue-updated", ());
 
+    // Asymmetric on purpose, all three variants measured against a full pass:
+    //   * exact cut both ends  → clips the first word's onset, "When" → "In"
+    //   * 0.4 s on both ends   → every onset correct, but every row picks up a
+    //                            fragment of the next one ("...and come back
+    //                            to a field.")
+    //   * 0.4 s lead-in only   → onsets correct, no trailing fragment
+    // whisper's segment boundaries simply run late: the row's own start sits
+    // just after its first syllable, while its end already covers the last
+    // word. So pad the front and cut the tail exactly.
     let input = std::path::Path::new(&source_path);
-    let wav_path = audio::extract_range_to_wav(&app, input, start, end, cancel_flag.clone()).await?;
+    let ctx_start = (start - RERUN_PAD_SECS).max(0.0);
+    let ctx_end = end;
+    let wav_path =
+        audio::extract_range_to_wav(&app, input, ctx_start, ctx_end, cancel_flag.clone()).await?;
+
+    // The preceding row's text, so the model knows what sentence it is in the
+    // middle of. Deliberately NOT this row's own text — priming it with the
+    // text we are trying to correct just makes it repeat it.
+    let prompt = work
+        .segments
+        .get((index as usize).wrapping_sub(1))
+        .map(|s| s.text.clone())
+        .unwrap_or_default();
 
     // Prefer the language chosen in the dialog; fall back to the work's stored
     // language (e.g. a previously detected one). "auto"/None → detect.
@@ -312,7 +395,8 @@ pub async fn rerun_segment(
             &wav_path_for_blocking,
             lang_arg.as_deref(),
             cancel_flag,
-            start,
+            ctx_start,
+            Some(prompt.as_str()).filter(|p| !p.is_empty()),
         )
     })
     .await
@@ -324,13 +408,19 @@ pub async fn rerun_segment(
 
     // A segment re-run only rewrites that one segment's text — its timestamps
     // and index stay put. The model may return several sub-segments for the
-    // range; join their text so the row stays a single segment.
-    let joined_text = new_segments
-        .iter()
-        .map(|s| s.text.trim())
-        .filter(|t| !t.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ");
+    // padded window; keep the ones that actually live in the original range
+    // (majority of their duration inside it) and join those, so the context
+    // padding lends accuracy without leaking the neighbours' words in.
+    let joined_text = join_text(new_segments.iter());
+
+    // Never replace real content with nothing: if the re-run produced no text
+    // at all, leave the row as it was and say so.
+    if joined_text.is_empty() {
+        let conn = lib_state.0.lock().map_err(lib_err)?;
+        crate::library::set_status(&conn, &id, "done", None)?;
+        let _ = app.emit("queue-updated", ());
+        return Err("re-run produced no text for this segment; kept the original".to_string());
+    }
 
     {
         let conn = lib_state.0.lock().map_err(lib_err)?;
@@ -345,6 +435,10 @@ pub async fn rerun_segment(
         }
         crate::library::update_transcript_edit(&conn, &id, &merged)?;
         crate::library::set_status(&conn, &id, "done", None)?;
+        crate::logs::info(format!(
+            "re-ran segment {index} ({start:.2}–{end:.2}s) of \"{}\"",
+            work.source_filename
+        ));
     }
     let _ = app.emit("queue-updated", ());
     Ok(())
@@ -372,7 +466,7 @@ pub fn cancel_work(
     }
 }
 
-fn start_queue_worker<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
+pub fn start_queue_worker<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
     {
         let queue = app.state::<QueueState>();
         let mut processing = queue.processing.lock().expect("queue lock poisoned");
@@ -420,6 +514,13 @@ async fn process_one<R: tauri::Runtime>(app: &tauri::AppHandle<R>, work: Work) {
         queue.cancel_flags.lock().expect("queue lock poisoned").remove(&work.id);
     }
 
+    match &result {
+        Ok(()) => crate::logs::info(format!("finished \"{}\"", work.source_filename)),
+        Err(e) if e == "cancelled" => {
+            crate::logs::info(format!("cancelled \"{}\"", work.source_filename))
+        }
+        Err(e) => crate::logs::error(format!("failed \"{}\": {e}", work.source_filename)),
+    }
     if let Err(e) = result {
         let lib_state = app.state::<Library>();
         let conn = lib_state.0.lock().expect("library lock poisoned");
@@ -459,6 +560,10 @@ async fn run_transcription<R: tauri::Runtime>(
         return Err("cancelled".to_string());
     }
 
+    crate::logs::info(format!(
+        "transcribing \"{}\" with model {model_id}",
+        work.source_filename
+    ));
     let wav_path = audio::extract_to_wav(app, input, cancel_flag.clone()).await?;
 
     let language = work.language.clone();
@@ -481,13 +586,26 @@ async fn run_transcription<R: tauri::Runtime>(
     let _ = std::fs::remove_file(&wav_path);
 
     let result = transcribe_result?;
+    crate::logs::info(format!(
+        "\"{}\": {} segments, {:.1}s of audio, language {}",
+        work.source_filename,
+        result.segments.len(),
+        result.duration_secs.unwrap_or(0.0),
+        result.detected_language.as_deref().unwrap_or("n/a")
+    ));
     let effective_language = result
         .detected_language
         .or_else(|| work.language.clone().filter(|l| l != "auto"));
 
     let lib_state = app.state::<Library>();
     let conn = lib_state.0.lock().expect("library lock poisoned");
-    crate::library::save_transcript(&conn, &work.id, effective_language.as_deref(), None, &result.segments)
+    crate::library::save_transcript(
+        &conn,
+        &work.id,
+        effective_language.as_deref(),
+        result.duration_secs,
+        &result.segments,
+    )
 }
 
 // ---- Export ----

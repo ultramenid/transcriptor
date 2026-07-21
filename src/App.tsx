@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import "./App.css";
 import Header from "./components/Header";
+import ErrorBoundary from "./components/ErrorBoundary";
 import Library from "./pages/Library";
 import Transcript from "./pages/Transcript";
 import Models from "./pages/Models";
@@ -153,6 +154,8 @@ function App() {
       <Header view={view} onGo={setView} onBack={goLibrary} />
 
       <div className="min-h-0 flex-1">
+        {/* Keyed on the view+work so a caught error clears when you navigate. */}
+        <ErrorBoundary key={`${view}:${activeWorkId ?? ""}`} onReset={goLibrary}>
         {view === "library" && (
           <Library
             models={models}
@@ -186,6 +189,7 @@ function App() {
           />
         )}
         {view === "settings" && <Settings />}
+        </ErrorBoundary>
       </div>
 
       {/* Full-window drop overlay — the one drop target for the whole app. */}
