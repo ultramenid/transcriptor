@@ -88,7 +88,12 @@ package.json     pnpm workspace: app + marketing
 # 1. Install JS dependencies
 pnpm install
 
-# 2. Run the app in dev mode (starts Vite + the Rust backend)
+# 2. Fetch ffmpeg/ffprobe sidecar binaries for your platform (one-time)
+#    Tauri's externalBin requires these to exist at build/dev time.
+#    They're gitignored and fetched per-platform from eugeneware/ffmpeg-static.
+pnpm fetch:sidecars
+
+# 3. Run the app in dev mode (starts Vite + the Rust backend)
 pnpm tauri dev
 ```
 
@@ -97,10 +102,11 @@ The first run will compile `whisper-rs` and whisper.cpp — expect a longer buil
 ### Build an installer for your OS
 
 ```bash
+# Sidecars must be fetched first (see above) — pnpm fetch:sidecars
 pnpm tauri build
 ```
 
-Output installers land in `src-tauri/target/release/bundle/`.
+Output installers land in `src-tauri/target/release/bundle/`. CI does this automatically on `v*` tags (see `.github/workflows/release.yml`).
 
 ### Marketing site (optional)
 
@@ -133,6 +139,7 @@ pnpm --filter marketing build    # production build
 | Command                          | What it does                                  |
 | -------------------------------- | --------------------------------------------- |
 | `pnpm install`                   | Install JS dependencies                        |
+| `pnpm fetch:sidecars`            | Fetch ffmpeg/ffprobe sidecars for your platform (one-time, before dev/build) |
 | `pnpm dev`                       | Run the Vite frontend only                     |
 | `pnpm tauri dev`                 | Run the full native app in dev mode           |
 | `pnpm tauri build`               | Build a native installer for the host OS       |
