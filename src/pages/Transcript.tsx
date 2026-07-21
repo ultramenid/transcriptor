@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { ModelEntry, Segment, Work } from "../lib/types";
+import type { ModelEntry, Quant, Segment, Work } from "../lib/types";
 import { formatDuration, formatTimecode } from "../lib/time";
 import Waveform from "../components/Waveform";
 import ConfirmDialog from "../components/ConfirmDialog";
@@ -12,7 +12,7 @@ const EXPORT_FORMATS = ["txt", "srt", "vtt", "json", "article"] as const;
 // Placeholder used only when a RerunDialog is closed — its `initial` prop is
 // evaluated on every render, so it must never throw even before models load.
 // The dialog resets from `initial` to the real pending selection on open.
-const PLACEHOLDER_SELECTION: RerunSelection = { modelId: "", language: "auto" };
+const PLACEHOLDER_SELECTION: RerunSelection = { modelId: "", quant: "full", language: "auto" };
 
 export default function Transcript({ workId, onDelete }: { workId: string; onDelete: () => void }) {
   const [work, setWork] = useState<Work | null>(null);
@@ -37,23 +37,36 @@ export default function Transcript({ workId, onDelete }: { workId: string; onDel
 
   const canRerun = models.some((m) => m.variants.some((v) => v.installed));
 
-  // Default selection for a re-run dialog: the work's current model, falling
-  // back to the first installed model if that one isn't installed anymore
-  // (e.g. it was deleted after the original run). Language defaults to the
-  // stored language, or auto. Returns null if no installed model is available
+  // Default selection for a re-run dialog: the work's current model/quant,
+  // falling back to the first installed model variant if that one isn't installed
+  // anymore (e.g. it was deleted after the original run). Language defaults to
+  // the stored language, or auto. Returns null if no installed model is available
   // yet (e.g. before the model list has loaded) — callers should only invoke
   // this when they know a re-run is possible.
   function defaultRerunSelection(): RerunSelection | null {
     const installed = models.filter((m) => m.variants.some((v) => v.installed));
-    const curModelInstalled = work?.modelId && models.some(
-      (m) => m.id === work.modelId && m.variants.some((v) => v.installed),
-    );
-    if (curModelInstalled) {
-      return { modelId: work!.modelId!, language: work?.language ?? "auto" };
+    if (work?.modelId && work.quant) {
+      const curModel = models.find((m) => m.id === work.modelId);
+      const curInstalled = curModel?.variants.some(
+        (v) => v.quant === work.quant && v.installed,
+      );
+      if (curInstalled) {
+        return {
+          modelId: work.modelId,
+          quant: work.quant as Quant,
+          language: work?.language ?? "auto",
+        };
+      }
     }
     const first = installed[0];
     if (!first) return null;
-    return { modelId: first.id, language: work?.language ?? "auto" };
+    const firstVariant = first.variants.find((v) => v.installed);
+    if (!firstVariant) return null;
+    return {
+      modelId: first.id,
+      quant: firstVariant.quant,
+      language: work?.language ?? "auto",
+    };
   }
 
   const loadWork = useCallback(() => {
@@ -178,21 +191,40 @@ export default function Transcript({ workId, onDelete }: { workId: string; onDel
     el?.scrollIntoView({ block: "nearest" });
   }, [playingIndex, playing]);
 
-  // Spacebar = play/pause, video-editor style. Skipped while transcribing or
-  // when there's no audio, and ignored while typing in a field or editing a
-  // subtitle so the space reaches the text instead.
+  // Video-editor keys, global like a timeline: space = play/pause, ArrowUp /
+  // ArrowDown = step subtitles — moving the selection AND seeking the audio, so
+  // arrows and space always act on the same subtitle (arrows work mid-playback
+  // too). Skipped while transcribing and while typing in a field or editing a
+  // subtitle so the keys reach the text instead.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (e.key !== " " && e.code !== "Space") return;
-      if (isRunning || !srcUrl) return;
+      const isSpace = e.key === " " || e.code === "Space";
+      const isArrow = e.key === "ArrowDown" || e.key === "ArrowUp";
+      if (!isSpace && !isArrow) return;
+      if (isRunning) return;
       const t = e.target as HTMLElement | null;
       if (t && (t.isContentEditable || t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT")) return;
+      if (isSpace) {
+        if (!srcUrl) return;
+        e.preventDefault();
+        togglePlay();
+        return;
+      }
+      if (segments.length === 0) return;
       e.preventDefault();
-      togglePlay();
+      // Step from what the user currently sees as active: the playing subtitle
+      // while audio runs, the selected one otherwise.
+      const base = playing && playingIndex >= 0 ? playingIndex : Math.min(selectedIndex, segments.length - 1);
+      const next = Math.max(0, Math.min(segments.length - 1, base + (e.key === "ArrowDown" ? 1 : -1)));
+      setSelectedIndex(next);
+      if (srcUrl) seekTo(segments[next].start);
+      const row = gridRef.current?.querySelector<HTMLDivElement>(`[data-idx="${next}"]`);
+      row?.focus({ preventScroll: true });
+      row?.scrollIntoView({ block: "nearest" });
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [isRunning, srcUrl, togglePlay]);
+  }, [isRunning, srcUrl, togglePlay, segments, playing, playingIndex, selectedIndex]);
 
   async function doCancel() {
     await invoke("cancel_work", { id: workId });
@@ -206,7 +238,12 @@ export default function Transcript({ workId, onDelete }: { workId: string; onDel
     setLiveSegments([]);
     setEditedSegments(null);
     setProgress(0);
-    await invoke("rerun_work", { id: workId, modelId: sel.modelId, language: sel.language });
+    await invoke("rerun_work", {
+      id: workId,
+      modelId: sel.modelId,
+      quant: sel.quant,
+      language: sel.language,
+    });
     loadWork();
   }
   function requestRerun() {
@@ -223,6 +260,7 @@ export default function Transcript({ workId, onDelete }: { workId: string; onDel
       await invoke("rerun_segment", {
         id: workId,
         modelId: sel.modelId,
+        quant: sel.quant,
         language: sel.language,
         start: seg.start,
         end: seg.end,
@@ -356,7 +394,7 @@ export default function Transcript({ workId, onDelete }: { workId: string; onDel
               {segments.length > 0 && (
                 <div ref={gridRef} className="border-t border-border-subtle">
                   {/* Column header */}
-                  <div className="grid grid-cols-[2.5rem_7.5rem_7.5rem_4.5rem_1fr_1.5rem] border-b border-border-subtle bg-bg font-mono text-[10px] uppercase tracking-[0.1em] text-ink-faint">
+                  <div className="grid grid-cols-[2.5rem_7.5rem_7.5rem_4.5rem_1fr_5.5rem] border-b border-border-subtle bg-bg font-mono text-[10px] uppercase tracking-[0.1em] text-ink-faint">
                     <span className="px-2 py-2 text-right">#</span>
                     <span className="px-2 py-2">Start</span>
                     <span className="px-2 py-2">End</span>
@@ -389,26 +427,20 @@ export default function Transcript({ workId, onDelete }: { workId: string; onDel
                         }}
                         onFocus={() => setSelectedIndex(i)}
                         onKeyDown={(e) => {
+                          // Arrows are handled globally (selection + seek).
                           if (isRunning) return;
-                          const el = e.currentTarget;
-                          if (e.key === "ArrowDown") {
+                          if (e.key === "Enter" && work?.status === "done") {
                             e.preventDefault();
-                            (el.nextElementSibling as HTMLDivElement | null)?.focus();
-                          } else if (e.key === "ArrowUp") {
-                            e.preventDefault();
-                            (el.previousElementSibling as HTMLDivElement | null)?.focus();
-                          } else if (e.key === "Enter" && work?.status === "done") {
-                            e.preventDefault();
-                            el.querySelector<HTMLParagraphElement>("p[contenteditable]")?.focus();
+                            e.currentTarget.querySelector<HTMLParagraphElement>("p[contenteditable]")?.focus();
                           }
                         }}
-                        className={`group grid scroll-mt-32 cursor-pointer grid-cols-[2.5rem_7.5rem_7.5rem_4.5rem_1fr_1.5rem] items-start border-b border-border-subtle/60 outline-none ${
-                          isSel ? "bg-panel-2" : "hover:bg-panel"
+                        className={`group grid scroll-mt-32 cursor-pointer grid-cols-[2.5rem_7.5rem_7.5rem_4.5rem_1fr_5.5rem] items-start border-b border-border-subtle/60 border-l-2 outline-none ${
+                          isSel ? "border-l-ink bg-panel-2" : "border-l-transparent hover:bg-panel"
                         }`}
                       >
                         <span
-                          className={`px-2 py-2.5 text-right font-mono text-[11px] tabular-nums border-l-2 ${
-                            isSel ? "border-ink text-ink" : "border-transparent text-ink-faint"
+                          className={`px-2 py-2.5 text-right font-mono text-[11px] tabular-nums ${
+                            isSel ? "text-ink" : "text-ink-faint"
                           }`}
                         >
                           {i + 1}
@@ -440,12 +472,15 @@ export default function Transcript({ workId, onDelete }: { workId: string; onDel
                         >
                           {s.text}
                         </p>
-                        <div className="relative flex items-start justify-center pt-1.5">
+                        <div className="relative flex items-start justify-end pr-2 pt-1.5">
                           {isRerunning ? (
-                            <span
-                              className="h-1.5 w-1.5 rounded-full bg-ink animate-pulse motion-reduce:animate-none"
-                              aria-label="Re-running segment"
-                            />
+                            <span className="flex items-center gap-1.5 py-0.5 font-mono text-[9px] uppercase tracking-[0.1em] text-ink-muted">
+                              <span
+                                className="h-1.5 w-1.5 rounded-full bg-ink animate-pulse motion-reduce:animate-none"
+                                aria-hidden
+                              />
+                              Re-running
+                            </span>
                           ) : rowCanRerun ? (
                             <button
                               onClick={(e) => {
@@ -453,10 +488,12 @@ export default function Transcript({ workId, onDelete }: { workId: string; onDel
                                 requestSegRerun(i);
                               }}
                               aria-label={`Re-run segment ${i + 1}`}
-                              title="Re-run this segment"
-                              className="flex h-5 w-5 items-center justify-center rounded text-ink-faint opacity-0 transition-opacity hover:bg-panel-2 hover:text-ink focus:opacity-100 group-hover:opacity-100"
+                              title="Re-transcribe just this segment"
+                              className={`flex items-center gap-1 rounded-md border border-border-subtle px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.1em] text-ink-muted transition-all hover:border-border-strong hover:text-ink focus:opacity-100 group-hover:opacity-100 ${
+                                isSel ? "opacity-100" : "opacity-0"
+                              }`}
                             >
-                              <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden>
+                              <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden>
                                 <path
                                   d="M13 8a5 5 0 1 1-2.2-4.14M13 3v2.4h-2.4"
                                   stroke="currentColor"
@@ -465,6 +502,7 @@ export default function Transcript({ workId, onDelete }: { workId: string; onDel
                                   strokeLinejoin="round"
                                 />
                               </svg>
+                              Re-run
                             </button>
                           ) : null}
                         </div>
@@ -610,7 +648,7 @@ export default function Transcript({ workId, onDelete }: { workId: string; onDel
         models={models}
         initial={
           pendingSegRerun
-            ? { modelId: pendingSegRerun.modelId, language: pendingSegRerun.language }
+            ? { modelId: pendingSegRerun.modelId, quant: pendingSegRerun.quant, language: pendingSegRerun.language }
             : PLACEHOLDER_SELECTION
         }
         confirmLabel="Re-run"

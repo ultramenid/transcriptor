@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
-import type { ModelEntry } from "../lib/types";
+import type { ModelEntry, Quant } from "../lib/types";
 import PickerCell from "./Picker";
 import LanguageSelect from "./LanguageSelect";
 
 export interface RerunSelection {
   modelId: string;
+  quant: Quant;
   language: string;
 }
 
@@ -52,9 +53,31 @@ export default function RerunDialog({
     [models],
   );
 
+  // Available quant variants for the currently selected model.
+  const selectedModel = useMemo(
+    () => installed.find((m) => m.id === sel.modelId),
+    [installed, sel.modelId],
+  );
+  const quantOptions = useMemo(() => {
+    if (!selectedModel) return [];
+    return selectedModel.variants
+      .filter((v) => v.installed)
+      .map((v) => ({ value: v.quant, label: v.quant }));
+  }, [selectedModel]);
+
   function patch(p: Partial<RerunSelection>) {
     setSel((prev) => ({ ...prev, ...p }));
   }
+
+  // If the selected model changes and the current quant isn't available for it,
+  // snap to the first available quant.
+  useEffect(() => {
+    if (quantOptions.length === 0) return;
+    if (!quantOptions.some((q) => q.value === sel.quant)) {
+      patch({ quant: quantOptions[0].value });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sel.modelId, quantOptions]);
 
   if (!open) return null;
 
@@ -89,6 +112,16 @@ export default function RerunDialog({
                 options={installed.map((m) => ({ value: m.id, label: m.label }))}
               />
             </div>
+            {quantOptions.length > 1 && (
+              <div className="border-b border-border-subtle">
+                <PickerCell
+                  label="Quantization"
+                  value={sel.quant}
+                  onChange={(q) => patch({ quant: q as Quant })}
+                  options={quantOptions}
+                />
+              </div>
+            )}
             <div className="border-b border-border-subtle">
               <LanguageSelect value={sel.language} onChange={(l) => patch({ language: l })} />
             </div>
