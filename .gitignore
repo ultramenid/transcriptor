@@ -30,3 +30,4 @@ src-tauri/binaries/
 .vscode/
 # Keep CI workflows tracked (needed to build Windows binaries for sharing).
 !.github/workflows/
+test-assets/

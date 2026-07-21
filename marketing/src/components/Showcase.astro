@@ -1,7 +1,12 @@
 ---
 // The showcase video is the app's real transcribe flow, rendered by Remotion
-// (promo/ workspace → marketing/public/showcase.mp4). Static asset, no runtime
-// video-player JS. Full width because the app UI inside it has to stay legible.
+// (promo/ workspace → marketing/public/showcase.mp4). Full width because the
+// app UI inside it has to stay legible.
+//
+// It plays only while on screen — the demo opens on the home screen and tells a
+// story in order, so a visitor who scrolls down should meet it at the drop, not
+// halfway through a transcript. Rewinding on entry keeps that true on every
+// pass. Also spares the decoder on a page nobody has scrolled yet.
 ---
 
 <section class="mx-auto max-w-6xl px-6 py-24 sm:py-28">
@@ -20,8 +25,8 @@
     class="mt-14 overflow-hidden rounded-2xl border border-hairline bg-black"
   >
     <video
+      id="showcase"
       class="aspect-video w-full"
-      autoplay
       loop
       muted
       playsinline
@@ -31,3 +36,27 @@
     </video>
   </div>
 </section>
+
+<script is:inline>
+  (() => {
+    const v = document.getElementById("showcase");
+    if (!v) return;
+    // No IntersectionObserver (or JS off): fall back to playing it outright,
+    // so the demo is never a dead black box.
+    if (!("IntersectionObserver" in window)) {
+      v.play().catch(() => {});
+      return;
+    }
+    new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          v.currentTime = 0;
+          v.play().catch(() => {});
+        } else {
+          v.pause();
+        }
+      },
+      { threshold: 0.4 },
+    ).observe(v);
+  })();
+</script>
