@@ -11,6 +11,14 @@ pub struct Settings {
     pub default_language: String,
     pub output_dir: Option<String>,
     pub copy_source_into_library: bool,
+    /// Contact GitHub for a new release on launch. The only automatic network
+    /// call this app makes, so it is a setting rather than a hard-coded yes.
+    #[serde(default = "default_true")]
+    pub auto_check_updates: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for Settings {
@@ -21,6 +29,7 @@ impl Default for Settings {
             default_language: "auto".to_string(),
             output_dir: None,
             copy_source_into_library: false,
+            auto_check_updates: true,
         }
     }
 }
@@ -55,6 +64,8 @@ mod tests {
         assert_eq!(settings.default_language, "auto");
         assert!(settings.output_dir.is_none());
         assert!(!settings.copy_source_into_library);
+        // Config files written before this setting existed must still load.
+        assert!(settings.auto_check_updates);
     }
 
     #[test]
@@ -67,6 +78,7 @@ mod tests {
             default_language: "en".to_string(),
             output_dir: Some("/tmp/exports".to_string()),
             copy_source_into_library: true,
+            auto_check_updates: false,
         };
         save(&dir, &settings).unwrap();
         let loaded = load(&dir);
@@ -75,5 +87,6 @@ mod tests {
         assert_eq!(loaded.default_language, "en");
         assert_eq!(loaded.output_dir, Some("/tmp/exports".to_string()));
         assert!(loaded.copy_source_into_library);
+        assert!(!loaded.auto_check_updates);
     }
 }

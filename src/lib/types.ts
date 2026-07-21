@@ -55,4 +55,5 @@ export interface Settings {
   defaultLanguage: string;
   outputDir: string | null;
   copySourceIntoLibrary: boolean;
+  autoCheckUpdates: boolean;
 }

@@ -4,6 +4,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import "./App.css";
 import Header from "./components/Header";
 import ErrorBoundary from "./components/ErrorBoundary";
+import UpdateBanner from "./components/UpdateBanner";
 import Library from "./pages/Library";
 import Transcript from "./pages/Transcript";
 import Models from "./pages/Models";
@@ -152,6 +153,7 @@ function App() {
   return (
     <div className="flex h-screen flex-col bg-bg text-ink antialiased">
       <Header view={view} onGo={setView} onBack={goLibrary} />
+      <UpdateBanner />
 
       <div className="min-h-0 flex-1">
         {/* Keyed on the view+work so a caught error clears when you navigate. */}

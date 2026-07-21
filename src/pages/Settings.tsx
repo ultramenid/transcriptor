@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import { check } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 import type { Settings as SettingsType } from "../lib/types";
 
 const DEFAULT: SettingsType = {
@@ -9,6 +11,7 @@ const DEFAULT: SettingsType = {
   defaultLanguage: "auto",
   outputDir: null,
   copySourceIntoLibrary: false,
+  autoCheckUpdates: true,
 };
 
 export default function Settings() {
@@ -32,6 +35,31 @@ export default function Settings() {
       setLog(await invoke<string>("read_log"));
     } catch (e) {
       setLogErr(String(e));
+    }
+  }
+
+  // Manual check reports everything, including "you're up to date" and any
+  // network error — unlike the launch check, a person is waiting on this one.
+  const [updateMsg, setUpdateMsg] = useState<string | null>(null);
+  const [checking, setChecking] = useState(false);
+
+  async function checkUpdates() {
+    setChecking(true);
+    setUpdateMsg(null);
+    try {
+      const update = await check();
+      if (!update?.available) {
+        setUpdateMsg("You're on the latest version.");
+        return;
+      }
+      setUpdateMsg(`Version ${update.version} found — downloading…`);
+      await update.downloadAndInstall();
+      setUpdateMsg("Installed. Restarting…");
+      await relaunch();
+    } catch (e) {
+      setUpdateMsg(`Could not check for updates: ${e}`);
+    } finally {
+      setChecking(false);
     }
   }
 
@@ -94,6 +122,37 @@ export default function Settings() {
         {saved && (
           <p className="mt-3 font-mono text-[10px] uppercase tracking-[0.15em] text-ink-faint">Saved</p>
         )}
+
+        <div className="grid grid-cols-[1fr_auto] items-center gap-x-6 border-b border-border-subtle py-4">
+          <div className="min-w-0">
+            <p className="text-sm text-ink">Updates</p>
+            <p className="mt-0.5 font-mono text-[11px] text-ink-faint">
+              {updateMsg ?? "Checks GitHub for a new release. The only network call this app makes on its own."}
+            </p>
+          </div>
+          <button
+            onClick={checkUpdates}
+            disabled={checking}
+            className="rounded-md border border-border-subtle px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.15em] text-ink-muted transition-colors hover:border-border-strong hover:text-ink disabled:opacity-40"
+          >
+            {checking ? "Checking…" : "Check now"}
+          </button>
+        </div>
+
+        <label className="grid cursor-pointer grid-cols-[1fr_auto] items-center gap-x-6 border-b border-border-subtle py-4">
+          <div>
+            <p className="text-sm text-ink">Check for updates on launch</p>
+            <p className="mt-0.5 font-mono text-[11px] text-ink-faint">
+              Turn this off to keep the app fully offline until you check yourself.
+            </p>
+          </div>
+          <input
+            type="checkbox"
+            checked={settings.autoCheckUpdates}
+            onChange={(e) => save({ ...settings, autoCheckUpdates: e.target.checked })}
+            className="h-4 w-4 accent-[var(--color-ink)]"
+          />
+        </label>
 
         <section className="mt-10">
           <div className="grid grid-cols-[1fr_auto] items-center gap-x-6 border-t border-border-subtle py-4">
