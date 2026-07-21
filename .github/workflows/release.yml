@@ -66,6 +66,13 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
+      # Tauri names bundles with the bare version (Transcriptor_0.2.1_...),
+      # while the tag is v0.2.1 — using github.ref_name in the notes pointed
+      # users at filenames that never existed.
+      - name: Resolve version from tag
+        shell: bash
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+
       # tauri-action replaces the old `pnpm tauri build` + action-gh-release
       # pair: it signs the updater artifacts, uploads them to the release for
       # this tag, and merges every platform's signature into a single
@@ -102,7 +109,7 @@ jobs:
 
             ## macOS (Apple Silicon — M1/M2/M3/M4)
 
-            1. Download **`Transcriptor_${{ github.ref_name }}_aarch64.dmg`**.
+            1. Download **`Transcriptor_${{ env.VERSION }}_aarch64.dmg`**.
             2. Open the `.dmg` and drag **Transcriptor** into **Applications**.
             3. The app is **not code-signed or notarized**, so the first time you open it macOS will show **"Transcriptor is damaged and can't be opened."** This is Gatekeeper refusing an unsigned binary — the app is fine. Fix it once in **Terminal**:
                ```bash
@@ -114,7 +121,7 @@ jobs:
 
             ## Windows (x64 — Windows 10/11)
 
-            1. Download **`Transcriptor_${{ github.ref_name }}_x64-setup.exe`** (NSIS) **or** **`Transcriptor_${{ github.ref_name }}_x64_en-US.msi`** (MSI). Either works; pick one.
+            1. Download **`Transcriptor_${{ env.VERSION }}_x64-setup.exe`** (NSIS) **or** **`Transcriptor_${{ env.VERSION }}_x64_en-US.msi`** (MSI). Either works; pick one.
             2. Run the installer. The installer is **unsigned**, so SmartScreen may warn **"Windows protected your PC"** — click **More info → Run anyway** to proceed.
             3. Launch **Transcriptor** from the Start menu.
 
