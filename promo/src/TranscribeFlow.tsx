@@ -4,15 +4,19 @@ import { AbsoluteFill, interpolate, useCurrentFrame } from "remotion";
 // Transcriptor's real flow, start to finish: the home screen → a file dragged
 // in and dropped → model + language staged → Run → "Reading audio" → the
 // waveform lands and subtitles type themselves in as the playhead scrubs →
-// done, exports ready.
+// done → and then the part that makes it an editor rather than a converter:
+// click a line to seek, play it back, and re-run one line on a bigger model.
 //
 // Everything is taken from the app: colours are the App.css tokens, the drop
 // strip and staging panel mirror Library.tsx, the waveform texture reuses
 // Waveform.tsx's density + jitter maths, timecodes use the SRT format from
-// time.ts, and the transcript is genuine engine output from the test harness.
+// time.ts, the re-run dialog mirrors RerunDialog.tsx, and the transcript is
+// genuine engine output from the test harness. The one staged detail is the
+// word the re-run fixes — the interaction is real, that particular fix is an
+// illustration of it.
 
 export const FPS = 30;
-export const DURATION_FRAMES = 570; // 19 s
+export const DURATION_FRAMES = 870; // 29 s
 
 // ---- app design tokens (App.css) ----
 const C = {
@@ -36,7 +40,7 @@ const SEGS = [
   { start: 3.84, end: 9.16, text: "In this episode we explore what it means to run a speech model entirely on your own hardware." },
   { start: 9.16, end: 11.76, text: "First, let us talk about privacy." },
   { start: 11.76, end: 17.36, text: "When audio never leaves your machine, there is no risk of a cloud provider retaining your recordings," },
-  { start: 17.36, end: 19.92, text: "training on your data, or leaking it in a breach." },
+  { start: 17.36, end: 19.92, text: "training on your data, or leaking it in a breech." },
   { start: 19.92, end: 24.6, text: "The file you drop is the file that gets transcribed, and the transcript lives only on your" },
   { start: 24.6, end: 31.28, text: "disk. Second, accuracy. Modern speech models transcribe over 99 languages and can auto-detect" },
   { start: 31.28, end: 37.08, text: "the spoken language from the first few seconds of audio. They emit frame accurate time stamps," },
@@ -45,6 +49,10 @@ const SEGS = [
 ];
 const DUR = 48.0;
 const FILE = "offline-podcast-ep1.m4a";
+
+// The line the review act re-runs, and the homophone a bigger model gets right.
+const RR_IDX = 4;
+const RR_FIXED = "training on your data, or leaking it in a breach.";
 
 // ---- beats (frames) ----
 const DRAG_IN = 18; // file enters, cursor carries it
@@ -56,7 +64,18 @@ const TO_APP = 128; // transcript page
 const WAVE_IN = 158; // peaks replace the ambient wave
 const T_START = 168;
 const T_END = 462;
-const DONE_CARD = 510;
+
+// ---- review act: the page is an editor, not a receipt ----
+const REVIEW = 476; // cursor comes back
+const ROW_CLICK = 506; // click a line → it is selected and the audio seeks there
+const PLAY_CLICK = 530; // play from that line
+const PAUSE_AT = 602; // …and pause
+const RR_CLICK = 640; // the row's Re-run button
+const CONFIRM = 706; // confirm in the dialog
+const RR_DONE = 762; // one line comes back from a bigger model
+const PLAY_FROM = 17.36; // start of the clicked line
+
+const DONE_CARD = 810;
 
 // ---- timecode helpers (src/lib/time.ts) ----
 const pad = (n: number, l = 2) => Math.floor(n).toString().padStart(l, "0");
@@ -92,6 +111,13 @@ const label: React.CSSProperties = {
   textTransform: "uppercase",
   color: C.faint,
 };
+// Row grid: #, start, end, dur, text, per-row actions (Transcript.tsx).
+const GRID = "56px 160px 160px 84px 1fr 120px";
+// Measured off a render, so the review-act cursor lands on real controls.
+const ROW_Y = 403; // top of row 1 inside the window
+const ROW_H = 44;
+const PLAY_X = 37; // transport play button
+const PLAY_Y = 922;
 const btn: React.CSSProperties = {
   fontFamily: MONO,
   fontSize: 12,
@@ -126,11 +152,29 @@ export const TranscribeFlow = () => {
     extrapolateLeft: "clamp",
     extrapolateRight: "clamp",
   });
-  const pct = (t / DUR) * 100;
   const reading = frame < WAVE_IN;
   const running = frame < T_END;
+
+  // ---- review act state ----
+  // Clicking a row seeks; play advances from there; pausing freezes the head.
+  const seeked = frame >= ROW_CLICK;
+  const playing = frame >= PLAY_CLICK && frame < PAUSE_AT;
+  const curT = seeked
+    ? PLAY_FROM + Math.max(0, Math.min(frame, PAUSE_AT) - PLAY_CLICK) / FPS
+    : 0;
+  const rerunning = frame >= CONFIRM && frame < RR_DONE;
+  const dialog = frame >= RR_CLICK && frame < CONFIRM;
+
+  // One playhead and one selection, whichever act is driving them.
+  const head = running ? t : curT;
+  const pct = (head / DUR) * 100;
   const activeIdx = running ? SEGS.findIndex((s) => t >= s.start && t < s.end) : -1;
-  const active = activeIdx >= 0 ? SEGS[activeIdx] : null;
+  const selIdx = running
+    ? activeIdx
+    : seeked
+      ? SEGS.reduce((acc, s, i) => (s.start <= curT ? i : acc), 0)
+      : SEGS.length - 1;
+  const active = selIdx >= 0 ? SEGS[selIdx] : null;
   const started = running ? SEGS.filter((s) => t >= s.start).length : SEGS.length;
   const elapsed = Math.max(0, (frame - T_START) / FPS);
   const waveIn = interpolate(frame, [WAVE_IN, WAVE_IN + 14], [0, 1], {
@@ -158,6 +202,23 @@ export const TranscribeFlow = () => {
   });
   const pressed = frame >= CLICK && frame < CLICK + 8;
   const staged = frame >= STAGED;
+
+  // ---- scene 3: cursor path (window-local, see ROW_Y/ROW_H) ----
+  // row 5's text → the play button in the transport → row 5's Re-run button →
+  // the dialog's confirm.
+  const rrY = ROW_Y + RR_IDX * ROW_H + ROW_H / 2;
+  const rx = interpolate(
+    frame,
+    [REVIEW, ROW_CLICK, PLAY_CLICK, PAUSE_AT + 12, RR_CLICK, CONFIRM],
+    [1180, 700, PLAY_X, PLAY_X, 1452, 978],
+    { extrapolateLeft: "clamp", extrapolateRight: "clamp" },
+  );
+  const ry = interpolate(
+    frame,
+    [REVIEW, ROW_CLICK, PLAY_CLICK, PAUSE_AT + 12, RR_CLICK, CONFIRM],
+    [790, rrY, PLAY_Y, PLAY_Y, rrY, 600],
+    { extrapolateLeft: "clamp", extrapolateRight: "clamp" },
+  );
 
   return (
     <AbsoluteFill
@@ -253,7 +314,9 @@ export const TranscribeFlow = () => {
                     </>
                   ) : (
                     <>
-                      <div style={{ position: "absolute", top: 0, bottom: 0, left: 0, width: `${pct}%`, background: "rgba(244,244,244,.06)" }} />
+                      {running && (
+                        <div style={{ position: "absolute", top: 0, bottom: 0, left: 0, width: `${pct}%`, background: "rgba(244,244,244,.06)" }} />
+                      )}
                       {active && (
                         <>
                           <div
@@ -311,6 +374,9 @@ export const TranscribeFlow = () => {
                       </div>
                       <div style={{ position: "absolute", top: 0, bottom: 0, left: `${pct}%`, zIndex: 10 }}>
                         <div style={{ position: "absolute", top: 0, bottom: 0, width: 2, background: C.ink, opacity: running ? 0.6 + 0.4 * Math.sin(sec * 6) : 1 }} />
+                        {!running && (
+                          <div style={{ position: "absolute", top: -5, left: -4, width: 10, height: 10, borderRadius: 6, background: C.ink }} />
+                        )}
                       </div>
                     </>
                   )}
@@ -320,28 +386,37 @@ export const TranscribeFlow = () => {
 
             {/* rows */}
             <div style={{ flex: 1, margin: "22px 56px 0", borderTop: `1px solid ${C.border}`, overflow: "hidden" }}>
-              <div style={{ display: "grid", gridTemplateColumns: "56px 160px 160px 84px 1fr", borderBottom: `1px solid ${C.border}`, ...label, fontSize: 11 }}>
+              <div style={{ display: "grid", gridTemplateColumns: GRID, borderBottom: `1px solid ${C.border}`, ...label, fontSize: 11 }}>
                 <span style={{ padding: "10px" , textAlign: "right" }}>#</span>
                 <span style={{ padding: "10px" }}>Start</span>
                 <span style={{ padding: "10px" }}>End</span>
                 <span style={{ padding: "10px", textAlign: "right" }}>Dur</span>
                 <span style={{ padding: "10px 16px" }}>Text</span>
+                <span />
               </div>
               {SEGS.map((s, i) => {
                 if (running && t < s.start) return null;
                 const isActive = running ? i === activeIdx : false;
-                const isSel = running ? i === (activeIdx >= 0 ? activeIdx : started - 1) : i === SEGS.length - 1;
+                const isSel = i === (selIdx >= 0 ? selIdx : started - 1);
                 const f = isActive ? (t - s.start) / (s.end - s.start) : 1;
-                const chars = running && isActive ? Math.floor(s.text.length * Math.min(1, f * 1.08)) : s.text.length;
+                const text = i === RR_IDX && frame >= RR_DONE ? RR_FIXED : s.text;
+                const chars = running && isActive ? Math.floor(text.length * Math.min(1, f * 1.08)) : text.length;
+                const isRerunning = rerunning && i === RR_IDX;
                 return (
                   <div
                     key={i}
                     style={{
                       display: "grid",
-                      gridTemplateColumns: "56px 160px 160px 84px 1fr",
+                      gridTemplateColumns: GRID,
                       borderBottom: `1px solid ${C.border}66`,
                       borderLeft: `2px solid ${isSel ? C.ink : "transparent"}`,
                       background: isSel ? C.panel2 : "transparent",
+                      // Brief flash on the line that just came back, so a
+                      // one-word fix is visible at video scale.
+                      boxShadow:
+                        i === RR_IDX && frame >= RR_DONE
+                          ? `inset 0 0 0 999px rgba(244,244,244,${interpolate(frame, [RR_DONE, RR_DONE + 26], [0.16, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })})`
+                          : undefined,
                       fontFamily: MONO,
                       fontSize: 13.5,
                     }}
@@ -350,11 +425,48 @@ export const TranscribeFlow = () => {
                     <span style={{ padding: "11px 10px", color: isSel ? C.ink : C.muted }}>{fmtTC(s.start)}</span>
                     <span style={{ padding: "11px 10px", color: isSel ? C.ink : C.muted }}>{fmtTC(s.end)}</span>
                     <span style={{ padding: "11px 10px", textAlign: "right", color: C.faint }}>{(s.end - s.start).toFixed(2)}</span>
-                    <span style={{ padding: "10px 16px", fontFamily: SANS, fontSize: 16, lineHeight: 1.45, color: C.ink }}>
-                      {s.text.slice(0, chars)}
+                    <span
+                      style={{
+                        padding: "10px 16px",
+                        fontFamily: SANS,
+                        fontSize: 16,
+                        lineHeight: 1.45,
+                        color: C.ink,
+                        opacity: isRerunning ? 0.45 + 0.25 * Math.sin(sec * 7) : 1,
+                      }}
+                    >
+                      {text.slice(0, chars)}
                       {isActive && caretOn && (
                         <span style={{ display: "inline-block", width: 2.5, height: "0.95em", background: C.ink, verticalAlign: "-0.12em", marginLeft: 3 }} />
                       )}
+                    </span>
+                    {/* Per-row re-run: only on the selected row, exactly as the
+                        app reveals it on selection/hover. */}
+                    <span style={{ display: "flex", justifyContent: "flex-end", padding: "9px 10px 0 0" }}>
+                      {isRerunning ? (
+                        <span style={{ ...label, fontSize: 10, display: "flex", alignItems: "center", gap: 6, color: C.muted }}>
+                          <span style={{ width: 6, height: 6, borderRadius: 4, background: C.ink, opacity: 0.4 + 0.6 * Math.abs(Math.sin(sec * 4)) }} />
+                          Re-running
+                        </span>
+                      ) : !running && isSel && frame >= REVIEW && !dialog ? (
+                        <span
+                          style={{
+                            ...btn,
+                            fontSize: 10,
+                            padding: "3px 9px",
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 5,
+                            borderColor: frame >= RR_CLICK - 22 ? C.borderStrong : C.border,
+                            color: frame >= RR_CLICK - 22 ? C.ink : C.muted,
+                          }}
+                        >
+                          <svg width="10" height="10" viewBox="0 0 16 16" fill="none">
+                            <path d="M13 8a5 5 0 1 1-2.2-4.14M13 3v2.4h-2.4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+                          </svg>
+                          Re-run
+                        </span>
+                      ) : null}
                     </span>
                   </div>
                 );
@@ -398,8 +510,30 @@ export const TranscribeFlow = () => {
                 </>
               ) : (
                 <>
-                  <span style={{ color: C.muted, fontSize: 15 }}>▶</span>
-                  <span style={{ fontFamily: MONO, fontSize: 17, color: C.ink }}>00:00:00,000</span>
+                  <span
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      width: 30,
+                      height: 30,
+                      borderRadius: 7,
+                      background: frame >= PLAY_CLICK - 14 && frame < PAUSE_AT + 10 ? C.panel2 : "transparent",
+                      color: playing ? C.ink : C.muted,
+                    }}
+                  >
+                    {playing ? (
+                      <svg width="13" height="13" viewBox="0 0 12 12" fill="currentColor">
+                        <rect x="2" y="1.5" width="2.5" height="9" rx="0.5" />
+                        <rect x="7.5" y="1.5" width="2.5" height="9" rx="0.5" />
+                      </svg>
+                    ) : (
+                      <svg width="13" height="13" viewBox="0 0 12 12" fill="currentColor">
+                        <path d="M3 1.5l7 4.5-7 4.5z" />
+                      </svg>
+                    )}
+                  </span>
+                  <span style={{ fontFamily: MONO, fontSize: 17, color: C.ink }}>{fmtTC(curT)}</span>
                   <span style={{ fontFamily: MONO, fontSize: 13, color: C.faint }}>/ {fmtDur(DUR)} · {SEGS.length} subtitles</span>
                   <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
                     {["txt", "srt", "vtt", "json", "article", "copy"].map((f) => (
@@ -547,6 +681,61 @@ export const TranscribeFlow = () => {
             <Cursor x={cx} y={cy} />
           </>
         )}
+
+        {/* ---- re-run dialog (RerunDialog.tsx) ---- */}
+        {dialog && (
+          <div
+            style={{
+              position: "absolute",
+              inset: 0,
+              background: "rgba(0,0,0,.6)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              zIndex: 45,
+              opacity: interpolate(frame, [RR_CLICK, RR_CLICK + 7], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
+            }}
+          >
+            <div style={{ width: 520, background: C.panel, border: `1px solid ${C.border}`, borderRadius: 10, boxShadow: "0 30px 80px rgba(0,0,0,.6)" }}>
+              <div style={{ padding: "17px 22px", borderBottom: `1px solid ${C.border}` }}>
+                <div style={{ fontSize: 18, fontWeight: 600, letterSpacing: "-0.01em", color: C.ink }}>Re-transcribe segment</div>
+                <div style={{ fontFamily: MONO, fontSize: 12, color: C.faint, marginTop: 5 }}>
+                  Segment {RR_IDX + 1} · {fmtTC(SEGS[RR_IDX].start)} → {fmtTC(SEGS[RR_IDX].end)}
+                </div>
+              </div>
+              {[
+                ["Model", "Large v3"],
+                ["Quantization", "Full"],
+                ["Language", "English"],
+              ].map(([k, v]) => (
+                <div key={k} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "13px 22px", borderBottom: `1px solid ${C.border}` }}>
+                  <span style={{ ...label, fontSize: 11 }}>{k}</span>
+                  <span style={{ fontSize: 15, color: C.ink }}>{v}</span>
+                </div>
+              ))}
+              <div style={{ padding: "12px 22px", fontSize: 13, lineHeight: 1.5, color: C.faint }}>
+                This will re-run just this segment's time range and replace its text.
+              </div>
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: 9, padding: "14px 22px 18px" }}>
+                <span style={btn}>Cancel</span>
+                <span
+                  style={{
+                    ...btn,
+                    background: C.ink,
+                    color: C.bg,
+                    borderColor: C.ink,
+                    opacity: frame >= CONFIRM - 6 ? 0.85 : 1,
+                  }}
+                >
+                  Re-run
+                </span>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ---- review-act cursor ---- */}
+        {frame >= REVIEW && frame < CONFIRM + 12 && <Cursor x={rx} y={ry} />}
       </div>
 
       {/* ---- end card ---- */}

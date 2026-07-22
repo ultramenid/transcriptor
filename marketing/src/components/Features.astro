@@ -22,6 +22,11 @@ const features = [
     icon: "clock",
   },
   {
+    title: "Fix it in place",
+    body: "Click a line to play it, edit the text inline, or re-run one line on a bigger model.",
+    icon: "rerun",
+  },
+  {
     title: "Beautiful native UI",
     body: "A first-class desktop app on Windows, macOS, and Linux with live progress.",
     icon: "sparkle",
@@ -34,6 +39,8 @@ const paths: Record<string, string> = {
   file: "M14 3H7a2 2 0 00-2 2v14a2 2 0 002 2h10a2 2 0 002-2V8l-5-5zM14 3v5h5",
   clock: "M12 7v5l3 2M21 12a9 9 0 11-18 0 9 9 0 0118 0z",
   sparkle: "M12 3l2 5 5 2-5 2-2 5-2-5-5-2 5-2 2-5z",
+  // Same glyph as the per-line Re-run button in the app.
+  rerun: "M20 12a8 8 0 11-3.5-6.6M20 4v4.2h-4.2",
 };
 ---
 
