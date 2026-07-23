@@ -44,6 +44,7 @@ interface Props {
   view: View;
   onGo: (v: View) => void;
   onBack: () => void;
+  updateAvailable?: boolean;
 }
 
 // The window is undecorated everywhere, so this file draws the whole title bar:
@@ -84,7 +85,7 @@ const CRUMB: Record<Exclude<View, "library">, string> = {
   settings: "Settings",
 };
 
-export default function Header({ view, onGo, onBack }: Props) {
+export default function Header({ view, onGo, onBack, updateAvailable }: Props) {
   return (
     <>
       {/* Window controls get their own strip so the nav row below can start on
@@ -141,11 +142,19 @@ export default function Header({ view, onGo, onBack }: Props) {
           <button
             key={v}
             onClick={() => onGo(v)}
-            className={`rounded-md px-2.5 py-1.5 font-mono text-[10px] uppercase tracking-[0.15em] transition-colors ${
+            className={`relative rounded-md px-2.5 py-1.5 font-mono text-[10px] uppercase tracking-[0.15em] transition-colors ${
               view === v ? "bg-panel text-ink" : "text-ink-faint hover:bg-panel hover:text-ink-muted"
             }`}
           >
             {label}
+            {/* An update is waiting: a pulsing red dot on Settings, where the
+                install lives. Persists after the top banner is dismissed. */}
+            {v === "settings" && updateAvailable && (
+              <span
+                aria-label="Update available"
+                className="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-[#ef4444] animate-pulse motion-reduce:animate-none"
+              />
+            )}
           </button>
         ))}
           <ThemeToggle />

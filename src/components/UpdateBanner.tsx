@@ -1,39 +1,16 @@
-import { useEffect, useState } from "react";
-import { check, type Update } from "@tauri-apps/plugin-updater";
+import { useState } from "react";
+import { type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
-import { invoke } from "@tauri-apps/api/core";
-import type { Settings } from "../lib/types";
 
-// The one automatic network call this app makes: on launch, ask GitHub whether
-// a newer release exists. It sends nothing but the request itself — no id, no
-// usage data — and Settings can turn it off. Everything else stays offline.
-//
-// Failures are deliberately silent here: a launch check that can't reach GitHub
-// (offline, which is the normal case for this app) must not nag. The manual
-// button in Settings reports errors, because there a user asked.
+// Dismissible top-of-window banner for an available update. The launch check
+// itself lives in App (one shared network call); this just renders the result
+// and installs on click. Dismissing it leaves the Settings-nav pulse behind as
+// a quieter reminder.
 
-export default function UpdateBanner() {
-  const [update, setUpdate] = useState<Update | null>(null);
+export default function UpdateBanner({ update }: { update: Update | null }) {
   const [state, setState] = useState<"idle" | "installing" | "done" | "failed">("idle");
   const [error, setError] = useState<string | null>(null);
   const [dismissed, setDismissed] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const settings = await invoke<Settings>("get_settings");
-        if (!settings.autoCheckUpdates) return;
-        const found = await check();
-        if (!cancelled && found?.available) setUpdate(found);
-      } catch {
-        // Offline, GitHub down, no release yet — none of it is worth a banner.
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   async function install() {
     if (!update) return;

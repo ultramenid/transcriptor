@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { check } from "@tauri-apps/plugin-updater";
+import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import type { Settings as SettingsType } from "../lib/types";
 
@@ -14,7 +14,7 @@ const DEFAULT: SettingsType = {
   autoCheckUpdates: true,
 };
 
-export default function Settings() {
+export default function Settings({ update }: { update: Update | null }) {
   const [settings, setSettings] = useState<SettingsType>(DEFAULT);
   const [saved, setSaved] = useState(false);
 
@@ -63,6 +63,22 @@ export default function Settings() {
     }
   }
 
+  // Install the update found at launch (passed down from App), without a
+  // second check. Shares the checking flag so both buttons disable together.
+  async function installFound() {
+    if (!update) return;
+    setChecking(true);
+    setUpdateMsg(`Version ${update.version} — downloading…`);
+    try {
+      await update.downloadAndInstall();
+      setUpdateMsg("Installed. Restarting…");
+      await relaunch();
+    } catch (e) {
+      setUpdateMsg(`Update failed: ${e}`);
+      setChecking(false);
+    }
+  }
+
   async function revealLog() {
     setLogErr(null);
     try {
@@ -88,6 +104,25 @@ export default function Settings() {
     <main className="h-full overflow-y-auto">
       <div className="mx-auto max-w-2xl px-6 py-10 md:px-10">
         <h1 className="mb-8 text-xl font-semibold tracking-tight text-ink">Settings</h1>
+
+        {update && (
+          <div className="mb-8 flex items-center gap-3 rounded-lg border border-border-subtle bg-panel px-4 py-3">
+            <span
+              className="h-2 w-2 shrink-0 rounded-full bg-[#ef4444] animate-pulse motion-reduce:animate-none"
+              aria-hidden
+            />
+            <p className="min-w-0 flex-1 text-sm text-ink">
+              New update available — <span className="font-medium">version {update.version}</span>.
+            </p>
+            <button
+              onClick={installFound}
+              disabled={checking}
+              className="shrink-0 rounded-md border border-border-subtle bg-ink px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.15em] text-bg transition-opacity hover:opacity-90 disabled:opacity-40"
+            >
+              {checking ? "Working…" : "Install and restart"}
+            </button>
+          </div>
+        )}
 
         <div className="grid grid-cols-[1fr_auto] items-center gap-x-6 border-t border-border-subtle py-4">
           <div className="min-w-0">

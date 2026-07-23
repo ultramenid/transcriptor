@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { check, type Update } from "@tauri-apps/plugin-updater";
+import type { Settings as SettingsType } from "./lib/types";
 import "./App.css";
 import Header from "./components/Header";
 import ErrorBoundary from "./components/ErrorBoundary";
@@ -29,6 +31,27 @@ export { MEDIA_EXTENSIONS };
 function App() {
   const [view, setView] = useState<View>("library");
   const [activeWorkId, setActiveWorkId] = useState<string | null>(null);
+
+  // One launch-time update check, shared by the top banner, the Settings-nav
+  // pulse, and the Settings page notice — so the app hits GitHub once, not
+  // three times. Silent on failure (offline is the normal case here).
+  const [update, setUpdate] = useState<Update | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const settings = await invoke<SettingsType>("get_settings");
+        if (!settings.autoCheckUpdates) return;
+        const found = await check();
+        if (!cancelled && found?.available) setUpdate(found);
+      } catch {
+        // Offline / GitHub down / no release yet — not worth surfacing.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Enqueue configuration lives at the shell so a drop works from any view,
   // not just the library. The pickers on the library page edit this state.
@@ -152,8 +175,8 @@ function App() {
 
   return (
     <div className="flex h-screen flex-col bg-bg text-ink antialiased">
-      <Header view={view} onGo={setView} onBack={goLibrary} />
-      <UpdateBanner />
+      <Header view={view} onGo={setView} onBack={goLibrary} updateAvailable={!!update} />
+      <UpdateBanner update={update} />
 
       <div className="min-h-0 flex-1">
         {/* Keyed on the view+work so a caught error clears when you navigate. */}
@@ -190,7 +213,7 @@ function App() {
             onAddCustom={addCustom}
           />
         )}
-        {view === "settings" && <Settings />}
+        {view === "settings" && <Settings update={update} />}
         </ErrorBoundary>
       </div>
 
