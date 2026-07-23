@@ -26,9 +26,11 @@ export interface Work {
   modelId: string | null;
   quant: string | null;
   status: "queued" | "running" | "done" | "failed" | "cancelled";
+  kind: "transcript" | "subtitle";
   error: string | null;
   transcriptText: string;
   segments: Segment[];
+  peaks: number[]; // real audio waveform; empty for works transcribed before it was persisted
   createdAt: string;
   updatedAt: string;
 }

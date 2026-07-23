@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import type { ModelEntry, Quant, Segment, Work } from "../lib/types";
-import { formatDuration, formatTimecode } from "../lib/time";
+import { formatDuration, formatTimecode, parseTimecode } from "../lib/time";
 import Waveform from "../components/Waveform";
 import ConfirmDialog from "../components/ConfirmDialog";
 import RerunDialog, { type RerunSelection } from "../components/RerunDialog";
@@ -44,14 +45,48 @@ function LiveText({ text }: { text: string }) {
   return <>{text.slice(0, shown)}</>;
 }
 
+// Start/End cell. Read-only span while transcribing; an editable field once the
+// work is done, committing on blur and snapping back to the last good value if
+// the edit doesn't parse. Keyed on `value` so a commit re-seeds the input.
+function TimeCell({
+  value,
+  editable,
+  selected,
+  onCommit,
+}: {
+  value: number;
+  editable: boolean;
+  selected: boolean;
+  onCommit: (secs: number) => void;
+}) {
+  const cls = `px-2 py-2.5 font-mono text-[11px] tabular-nums ${
+    selected ? "text-ink" : "text-ink-muted"
+  }`;
+  if (!editable) return <span className={cls}>{formatTimecode(value)}</span>;
+  return (
+    <input
+      key={value}
+      defaultValue={formatTimecode(value)}
+      spellCheck={false}
+      onClick={(e) => e.stopPropagation()}
+      onBlur={(e) => {
+        const parsed = parseTimecode(e.target.value);
+        if (parsed != null && parsed !== value) onCommit(parsed);
+        e.target.value = formatTimecode(parsed != null ? parsed : value);
+      }}
+      className={`w-full bg-transparent outline-none rounded focus:bg-panel-2 focus:text-ink ${cls}`}
+    />
+  );
+}
+
 export default function Transcript({ workId, onDelete }: { workId: string; onDelete: () => void }) {
   const [work, setWork] = useState<Work | null>(null);
   const [liveSegments, setLiveSegments] = useState<Segment[]>([]);
   const [editedSegments, setEditedSegments] = useState<Segment[] | null>(null);
   const [progress, setProgress] = useState(0);
   // Real waveform of the decoded audio, pushed once the WAV is ready — i.e.
-  // before any text exists. Live only; a reopened work falls back to the
-  // transcript-derived wave.
+  // before any text exists. A reopened work uses the peaks persisted on the
+  // Work; only pre-persistence works fall back to the transcript-derived wave.
   const [audio, setAudio] = useState<{ durationSecs: number; peaks: number[] } | null>(null);
   const [view, setView] = useState<"timestamped" | "article">("timestamped");
   const [exportMsg, setExportMsg] = useState<string | null>(null);
@@ -143,6 +178,9 @@ export default function Transcript({ workId, onDelete }: { workId: string; onDel
   }, [workId, loadWork]);
 
   const isRunning = work?.status === "running" || work?.status === "queued";
+  // Imported subtitles have no source audio: no waveform, no playback, and the
+  // transport bar becomes a Save / Save as strip instead of the exporter.
+  const isSubtitle = work?.kind === "subtitle";
   // A per-segment re-run flips status to running then back to done, but the
   // rest of the transcript is unchanged — keep showing the finished segments
   // and just pulse the affected row instead of swapping to live sub-segments.
@@ -196,7 +234,10 @@ export default function Transcript({ workId, onDelete }: { workId: string; onDel
   const audioRef = useRef<HTMLAudioElement>(null);
   const [playing, setPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
-  const srcUrl = work?.sourcePath ? convertFileSrc(work.sourcePath) : null;
+  // Imported subtitle works point sourcePath at the .srt itself, not audio —
+  // no waveform seek target, so treat them as having no media.
+  const srcUrl =
+    work?.sourcePath && work.kind !== "subtitle" ? convertFileSrc(work.sourcePath) : null;
 
   const liveIdx = segments.length - 1;
 
@@ -310,6 +351,7 @@ export default function Transcript({ workId, onDelete }: { workId: string; onDel
     const seg = segments[index];
     if (!seg || !work?.sourcePath) return;
     setRerunningIndex(index);
+    setProgress(0);
     setLiveSegments([]);
     setEditedSegments(null);
     try {
@@ -337,10 +379,13 @@ export default function Transcript({ workId, onDelete }: { workId: string; onDel
     onDelete();
   }
 
-  async function editSegment(index: number, text: string) {
+  async function patchSegment(index: number, patch: Partial<Segment>) {
     const base = editedSegments ?? work?.segments ?? [];
-    if (base[index]?.text === text) return;
-    const next = base.map((s, i) => (i === index ? { ...s, text } : s));
+    const cur = base[index];
+    if (!cur) return;
+    // No-op if nothing actually changed (blur fires even without an edit).
+    if ((Object.keys(patch) as (keyof Segment)[]).every((k) => patch[k] === cur[k])) return;
+    const next = base.map((s, i) => (i === index ? { ...s, ...patch } : s));
     setEditedSegments(next);
     await invoke("update_transcript", { id: workId, segments: next });
   }
@@ -357,6 +402,27 @@ export default function Transcript({ workId, onDelete }: { workId: string; onDel
     try {
       const path = await invoke<string>("export_transcript", { id: workId, format });
       setExportMsg(`Saved to ${path}`);
+    } catch (e) {
+      setExportMsg(String(e));
+    }
+  }
+
+  // Subtitle editor: write the edited segments back to an .srt file. "Save"
+  // overwrites the imported file; "Save as" prompts for a new path.
+  async function saveSrt(saveAs = false) {
+    let target: string | null = saveAs ? null : work?.sourcePath ?? null;
+    if (!target) {
+      const stem = (work?.sourceFilename ?? "subtitles").replace(/\.[^.]+$/, "");
+      const picked = await saveDialog({
+        defaultPath: `${stem}.srt`,
+        filters: [{ name: "SubRip", extensions: ["srt"] }],
+      });
+      if (typeof picked !== "string") return;
+      target = picked;
+    }
+    try {
+      await invoke("write_subtitle", { path: target, segments });
+      setExportMsg(`Saved to ${target}`);
     } catch (e) {
       setExportMsg(String(e));
     }
@@ -398,7 +464,7 @@ export default function Transcript({ workId, onDelete }: { workId: string; onDel
               </p>
             </div>
             <div className="flex shrink-0 items-center gap-2">
-              {work?.sourcePath && canRerun && !isRunning && (
+              {work?.sourcePath && work.kind !== "subtitle" && canRerun && !isRunning && (
                 <button
                   onClick={requestRerun}
                   className="flex items-center gap-1.5 rounded-md border border-border-subtle px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.1em] text-ink-muted transition-colors hover:border-border-strong hover:text-ink"
@@ -422,12 +488,12 @@ export default function Transcript({ workId, onDelete }: { workId: string; onDel
             </div>
           </div>
 
-          {view === "timestamped" && (work?.durationSecs != null || segments.length > 0 || isRunning) && (
+          {view === "timestamped" && !isSubtitle && (work?.durationSecs != null || segments.length > 0 || isRunning) && (
             <div className="sticky top-0 z-20 -mx-1 bg-bg/95 px-1 pb-3 pt-1 backdrop-blur">
               <Waveform
                 durationSecs={audio?.durationSecs ?? work?.durationSecs ?? null}
                 segments={segments}
-                peaks={audio?.peaks ?? null}
+                peaks={audio?.peaks ?? (work?.peaks?.length ? work.peaks : null)}
                 progress={progress}
                 running={isRunning && !isSegRerunning}
                 currentTime={!isRunning || isSegRerunning ? currentTime : null}
@@ -464,7 +530,8 @@ export default function Transcript({ workId, onDelete }: { workId: string; onDel
                     const isLive = isRunning && !isSegRerunning && i === liveIdx;
                     const isSel = i === selIdx;
                     const isRerunning = rerunningIndex === i;
-                    const rowCanRerun = canRerun && work?.status === "done" && !!work.sourcePath && !isRunning;
+                    const rowCanRerun =
+                      canRerun && work?.status === "done" && !!work.sourcePath && work.kind !== "subtitle" && !isRunning;
                     return (
                       <div
                         key={i}
@@ -506,20 +573,18 @@ export default function Transcript({ workId, onDelete }: { workId: string; onDel
                         >
                           {i + 1}
                         </span>
-                        <span
-                          className={`px-2 py-2.5 font-mono text-[11px] tabular-nums ${
-                            isSel ? "text-ink" : "text-ink-muted"
-                          }`}
-                        >
-                          {formatTimecode(s.start)}
-                        </span>
-                        <span
-                          className={`px-2 py-2.5 font-mono text-[11px] tabular-nums ${
-                            isSel ? "text-ink" : "text-ink-muted"
-                          }`}
-                        >
-                          {formatTimecode(s.end)}
-                        </span>
+                        <TimeCell
+                          value={s.start}
+                          editable={work?.status === "done"}
+                          selected={isSel}
+                          onCommit={(secs) => patchSegment(i, { start: secs })}
+                        />
+                        <TimeCell
+                          value={s.end}
+                          editable={work?.status === "done"}
+                          selected={isSel}
+                          onCommit={(secs) => patchSegment(i, { end: secs })}
+                        />
                         <span className="px-2 py-2.5 text-right font-mono text-[11px] tabular-nums text-ink-faint">
                           {(s.end - s.start).toFixed(2)}
                         </span>
@@ -537,7 +602,7 @@ export default function Transcript({ workId, onDelete }: { workId: string; onDel
                             }`}
                             contentEditable={work?.status === "done"}
                             suppressContentEditableWarning
-                            onBlur={(e) => editSegment(i, e.currentTarget.textContent ?? "")}
+                            onBlur={(e) => patchSegment(i, { text: e.currentTarget.textContent ?? "" })}
                           >
                             {isLive ? <LiveText text={s.text} /> : s.text}
                           </p>
@@ -550,12 +615,16 @@ export default function Transcript({ workId, onDelete }: { workId: string; onDel
                         </div>
                         <div className="relative flex items-start justify-end pr-2 pt-1.5">
                           {isRerunning ? (
-                            <span className="flex items-center gap-1.5 py-0.5 font-mono text-[9px] uppercase tracking-[0.1em] text-ink-muted">
-                              <span
-                                className="h-1.5 w-1.5 rounded-full bg-ink animate-pulse motion-reduce:animate-none"
-                                aria-hidden
-                              />
-                              Re-running
+                            <span className="flex flex-col items-end gap-1 py-0.5">
+                              <span className="font-mono text-[9px] uppercase tracking-[0.1em] text-ink-muted tabular-nums">
+                                Re-running {progress}%
+                              </span>
+                              <span className="h-[3px] w-14 overflow-hidden rounded-full bg-border-subtle" aria-hidden>
+                                <span
+                                  className="block h-full rounded-full bg-ink transition-[width] duration-200 ease-out"
+                                  style={{ width: `${Math.max(4, progress)}%` }}
+                                />
+                              </span>
                             </span>
                           ) : rowCanRerun ? (
                             <button
@@ -650,6 +719,40 @@ export default function Transcript({ workId, onDelete }: { workId: string; onDel
             <button onClick={doCancel} className={`ml-auto ${transportBtn}`}>
               Cancel
             </button>
+          </>
+        ) : isSubtitle ? (
+          <>
+            <span className="font-mono text-[11px] tabular-nums text-ink-faint">
+              {segments.length} subtitles
+            </span>
+            <div className="ml-auto flex items-center gap-1.5">
+              <button onClick={() => saveSrt(true)} className={transportBtn}>
+                Save as…
+              </button>
+              <button
+                onClick={() => saveSrt(false)}
+                className="rounded-md border border-border-subtle bg-ink px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.1em] text-bg transition-opacity hover:opacity-90"
+              >
+                Save
+              </button>
+              <span className="mx-1 h-4 w-px bg-border-subtle" aria-hidden />
+              <button
+                onClick={() => setConfirmDelete(true)}
+                aria-label="Delete subtitle"
+                title="Delete"
+                className="flex h-7 w-7 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-panel-2 hover:text-ink"
+              >
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden>
+                  <path
+                    d="M3 4h10M6.5 4V2.5h3V4M5 4l.6 9h4.8L11 4M7 7v4M9 7v4"
+                    stroke="currentColor"
+                    strokeWidth="1.3"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </button>
+            </div>
           </>
         ) : (
           <>

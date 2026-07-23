@@ -28,6 +28,10 @@ pub struct TranscribeResult {
     pub segments: Vec<Segment>,
     pub detected_language: Option<String>,
     pub duration_secs: Option<f64>,
+    // Per-bucket amplitude of the decoded audio, so the library can redraw the
+    // real waveform instead of the transcript-derived fallback. Empty for
+    // per-segment re-runs (they only cover a slice, not the whole file).
+    pub peaks: Vec<f32>,
 }
 
 /// Number of waveform buckets emitted to the UI. Fixed cost regardless of file
@@ -97,18 +101,20 @@ pub fn transcribe<R: tauri::Runtime>(
 
     let samples = read_wav_samples(wav_path)?;
     if samples.is_empty() {
-        return Ok(TranscribeResult { segments: Vec::new(), detected_language: None, duration_secs: Some(0.0) });
+        return Ok(TranscribeResult { segments: Vec::new(), detected_language: None, duration_secs: Some(0.0), peaks: Vec::new() });
     }
 
     // The waveform lands before the first word does: the UI draws the real
     // audio shape as soon as the WAV is decoded, then fills text in over it.
+    // The same peaks are returned below so the library can persist them.
     let duration_secs = samples.len() as f64 / SAMPLE_RATE as f64;
+    let wave = peaks(&samples, PEAK_BUCKETS);
     let _ = app.emit(
         "transcribe-audio",
         AudioEvent {
             work_id: work_id.to_string(),
             duration_secs,
-            peaks: peaks(&samples, PEAK_BUCKETS),
+            peaks: wave.clone(),
         },
     );
 
@@ -210,7 +216,7 @@ pub fn transcribe<R: tauri::Runtime>(
         emit_progress(app, work_id, progress);
     }
 
-    Ok(TranscribeResult { segments: all_segments, detected_language, duration_secs: Some(duration_secs) })
+    Ok(TranscribeResult { segments: all_segments, detected_language, duration_secs: Some(duration_secs), peaks: wave })
 }
 
 /// Transcribes a range that has already been extracted to a WAV (e.g. by
@@ -236,7 +242,7 @@ pub fn transcribe_range<R: tauri::Runtime>(
 
     let samples = read_wav_samples(wav_path)?;
     if samples.is_empty() {
-        return Ok(TranscribeResult { segments: Vec::new(), detected_language: None, duration_secs: None });
+        return Ok(TranscribeResult { segments: Vec::new(), detected_language: None, duration_secs: None, peaks: Vec::new() });
     }
 
     let requested_language = language.unwrap_or("auto");
@@ -278,6 +284,16 @@ pub fn transcribe_range<R: tauri::Runtime>(
             params.set_initial_prompt(prompt);
         }
 
+        // Same within-chunk progress as the full-file path, so a re-run's bar
+        // glides instead of jumping 0 → 100. A single segment is usually one
+        // chunk, so without this there'd be no motion at all until it finished.
+        let app_prog = app.clone();
+        let work_id_prog = work_id.to_string();
+        params.set_progress_callback_safe(move |p: i32| {
+            let overall = (chunk_index as i32 * 100 + p.clamp(0, 100)) / total_chunks as i32;
+            emit_progress(&app_prog, &work_id_prog, overall.clamp(0, 100));
+        });
+
         let mut state = ctx
             .create_state()
             .map_err(|e| format!("failed to create whisper state: {e}"))?;
@@ -317,7 +333,7 @@ pub fn transcribe_range<R: tauri::Runtime>(
         emit_progress(app, work_id, progress);
     }
 
-    Ok(TranscribeResult { segments: all_segments, detected_language, duration_secs: None })
+    Ok(TranscribeResult { segments: all_segments, detected_language, duration_secs: None, peaks: Vec::new() })
 }
 
 fn emit_progress<R: tauri::Runtime>(app: &tauri::AppHandle<R>, work_id: &str, progress: i32) {

@@ -110,6 +110,8 @@ pub fn run() {
             commands::rerun_work,
             commands::rerun_segment,
             commands::cancel_work,
+            commands::import_subtitle,
+            commands::write_subtitle,
             commands::preview_export,
             commands::export_transcript,
             commands::read_log,

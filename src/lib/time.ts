@@ -21,6 +21,18 @@ export function formatTimecode(t: number): string {
   return `${pad(h)}:${pad(m)}:${pad(s)},${pad(ms, 3)}`;
 }
 
+// Inverse of formatTimecode, for the subtitle editor: parse HH:MM:SS,mmm (or
+// with a `.` separator, hours optional) back to seconds. Returns null on a
+// malformed edit so the field can snap back to its last good value.
+export function parseTimecode(s: string): number | null {
+  const m = s.trim().match(/^(?:(\d+):)?(\d{1,2}):(\d{1,2})(?:[.,](\d{1,3}))?$/);
+  if (!m) return null;
+  const [, h, mm, ss, ms] = m;
+  return (
+    (h ? +h * 3600 : 0) + +mm * 60 + +ss + (ms ? +ms.padEnd(3, "0") / 1000 : 0)
+  );
+}
+
 // createdAt is an epoch-millis string from the Rust side (library::now).
 export function formatRelative(ms: number): string {
   const now = Date.now();

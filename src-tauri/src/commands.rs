@@ -605,6 +605,7 @@ async fn run_transcription<R: tauri::Runtime>(
         effective_language.as_deref(),
         result.duration_secs,
         &result.segments,
+        &result.peaks,
     )
 }
 
@@ -690,6 +691,81 @@ fn render_export(work: &Work, format: &str) -> Result<String, String> {
     }
 }
 
+// ---- Standalone subtitle editor (open/edit/save an external .srt/.vtt) ----
+
+/// Inverse of `format_timecode`: parse `HH:MM:SS,mmm` or `HH:MM:SS.mmm` (hours
+/// optional) into seconds. Tolerant of either separator so the same parser
+/// handles SRT and VTT.
+fn parse_timecode(s: &str) -> Option<f64> {
+    let s = s.trim();
+    let (hms, ms) = match s.rsplit_once([',', '.']) {
+        Some((a, b)) => (a, b),
+        None => (s, "0"),
+    };
+    let ms: f64 = ms.parse().ok()?;
+    let parts: Vec<&str> = hms.split(':').collect();
+    let (h, m, sec): (f64, f64, f64) = match parts.as_slice() {
+        [h, m, s] => (h.parse().ok()?, m.parse().ok()?, s.parse().ok()?),
+        [m, s] => (0.0, m.parse().ok()?, s.parse().ok()?),
+        _ => return None,
+    };
+    Some(h * 3600.0 + m * 60.0 + sec + ms / 1000.0)
+}
+
+/// Parse SRT or VTT text into segments. Blocks are separated by blank lines;
+/// within a block the `-->` line carries the times and the following lines are
+/// the caption. Blocks without a `-->` line (index-only, the VTT header) are
+/// skipped, so the one parser covers both formats.
+fn parse_subtitles(text: &str) -> Vec<Segment> {
+    let text = text.replace("\r\n", "\n").replace('\r', "\n");
+    let mut segments = Vec::new();
+    for block in text.split("\n\n") {
+        let lines: Vec<&str> = block.lines().collect();
+        let Some(tc_idx) = lines.iter().position(|l| l.contains("-->")) else { continue };
+        let Some((a, b)) = lines[tc_idx].split_once("-->") else { continue };
+        let Some(start) = parse_timecode(a) else { continue };
+        // VTT can append cue settings after the end time ("... align:start").
+        let end_str = b.trim().split_whitespace().next().unwrap_or("");
+        let Some(end) = parse_timecode(end_str) else { continue };
+        let text = lines[tc_idx + 1..].join("\n").trim().to_string();
+        segments.push(Segment { start, end, text });
+    }
+    segments
+}
+
+/// Import an external .srt/.vtt into the library as a finished `subtitle` work
+/// and return its id. Editing and export then reuse the transcript commands.
+#[tauri::command]
+pub fn import_subtitle(
+    app: AppHandle,
+    lib_state: State<'_, Library>,
+    path: String,
+) -> Result<String, String> {
+    let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let segments = parse_subtitles(&text);
+    if segments.is_empty() {
+        return Err("No subtitles found in that file.".to_string());
+    }
+    let filename = std::path::Path::new(&path)
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.clone());
+    let id = {
+        let conn = lib_state.0.lock().map_err(lib_err)?;
+        crate::library::create_subtitle(&conn, &filename, Some(&path), &segments)?
+    };
+    let _ = app.emit("queue-updated", ());
+    Ok(id)
+}
+
+/// Write segments back out as SRT to an arbitrary path (the subtitle editor's
+/// Save / Save as). Separate from `export_transcript`, which targets the
+/// configured output dir by work id.
+#[tauri::command]
+pub fn write_subtitle(path: String, segments: Vec<Segment>) -> Result<(), String> {
+    std::fs::write(&path, render_srt(&segments)).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn preview_export(
     lib_state: State<'_, Library>,
@@ -763,6 +839,25 @@ mod tests {
     }
 
     #[test]
+    fn parse_subtitles_roundtrips_srt_and_reads_vtt() {
+        // render_srt output must parse back to the same times/text.
+        let segments = vec![seg(0.0, 1.234, "Hello"), seg(1.5, 3.0, "world")];
+        let parsed = parse_subtitles(&render_srt(&segments));
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].start, 0.0);
+        assert_eq!(parsed[0].end, 1.234);
+        assert_eq!(parsed[0].text, "Hello");
+        assert_eq!(parsed[1].start, 1.5);
+        // VTT (dot separator, header block, cue settings) parses too.
+        let vtt = "WEBVTT\n\n00:00:02.000 --> 00:00:04.500 align:start\nHi there";
+        let p = parse_subtitles(vtt);
+        assert_eq!(p.len(), 1);
+        assert_eq!(p[0].start, 2.0);
+        assert_eq!(p[0].end, 4.5);
+        assert_eq!(p[0].text, "Hi there");
+    }
+
+    #[test]
     fn render_srt_is_well_formed() {
         let segments = vec![seg(0.0, 1.234, "Hello"), seg(1.5, 3.0, "world")];
         let srt = render_srt(&segments);
@@ -806,8 +901,10 @@ mod tests {
             quant: None,
             status: "done".to_string(),
             error: None,
+            kind: "transcript".to_string(),
             transcript_text: String::new(),
             segments,
+            peaks: Vec::new(),
             created_at: "0".to_string(),
             updated_at: "0".to_string(),
         }

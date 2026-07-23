@@ -21,8 +21,15 @@ pub struct Work {
     pub quant: Option<String>,
     pub status: String,
     pub error: Option<String>,
+    // "transcript" (audio/video run) or "subtitle" (an imported .srt/.vtt).
+    // Drives the library category filter; defaults to "transcript" for rows
+    // created before this column existed.
+    pub kind: String,
     pub transcript_text: String,
     pub segments: Vec<Segment>,
+    // Per-bucket audio amplitude, so the library redraws the real waveform.
+    // Empty for works transcribed before this was persisted.
+    pub peaks: Vec<f32>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -42,8 +49,10 @@ pub fn open(app_data_dir: &Path) -> Result<Connection, String> {
             quant TEXT,
             status TEXT NOT NULL,
             error TEXT,
+            kind TEXT NOT NULL DEFAULT 'transcript',
             transcript_text TEXT NOT NULL DEFAULT '',
             segments_json TEXT NOT NULL DEFAULT '[]',
+            peaks_json TEXT NOT NULL DEFAULT '[]',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
@@ -69,6 +78,18 @@ pub fn open(app_data_dir: &Path) -> Result<Connection, String> {
         "#,
     )
     .map_err(|e| e.to_string())?;
+
+    // Migrate DBs created before peaks were persisted. ADD COLUMN errors if it
+    // already exists — that's the "already migrated" case, so ignore it.
+    let _ = conn.execute(
+        "ALTER TABLE works ADD COLUMN peaks_json TEXT NOT NULL DEFAULT '[]'",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE works ADD COLUMN kind TEXT NOT NULL DEFAULT 'transcript'",
+        [],
+    );
+
     Ok(conn)
 }
 
@@ -97,6 +118,32 @@ pub fn create_queued(
         "INSERT INTO works (id, source_filename, source_path, model_id, quant, language, status, created_at, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'queued', ?7, ?7)",
         rusqlite::params![id, source_filename, source_path, model_id, quant, language, ts],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(id)
+}
+
+/// Insert an imported .srt/.vtt as a finished `subtitle` work. Duration is the
+/// last segment's end so the library shows a sensible length. No model/language.
+pub fn create_subtitle(
+    conn: &Connection,
+    source_filename: &str,
+    source_path: Option<&str>,
+    segments: &[Segment],
+) -> Result<String, String> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let ts = now();
+    let transcript_text = segments
+        .iter()
+        .map(|s| s.text.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let segments_json = serde_json::to_string(segments).map_err(|e| e.to_string())?;
+    let duration = segments.last().map(|s| s.end);
+    conn.execute(
+        "INSERT INTO works (id, source_filename, source_path, duration_secs, status, kind, transcript_text, segments_json, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, 'done', 'subtitle', ?5, ?6, ?7, ?7)",
+        rusqlite::params![id, source_filename, source_path, duration, transcript_text, segments_json, ts],
     )
     .map_err(|e| e.to_string())?;
     Ok(id)
@@ -177,6 +224,7 @@ pub fn save_transcript(
     language: Option<&str>,
     duration_secs: Option<f64>,
     segments: &[Segment],
+    peaks: &[f32],
 ) -> Result<(), String> {
     let transcript_text = segments
         .iter()
@@ -184,10 +232,14 @@ pub fn save_transcript(
         .collect::<Vec<_>>()
         .join(" ");
     let segments_json = serde_json::to_string(segments).map_err(|e| e.to_string())?;
+    // Empty peaks (e.g. a re-run that didn't recompute them) keep the stored
+    // waveform rather than wiping it.
+    let peaks_json = serde_json::to_string(peaks).map_err(|e| e.to_string())?;
     conn.execute(
         "UPDATE works SET status = 'done', language = ?2, duration_secs = COALESCE(?3, duration_secs),
-         transcript_text = ?4, segments_json = ?5, updated_at = ?6 WHERE id = ?1",
-        rusqlite::params![id, language, duration_secs, transcript_text, segments_json, now()],
+         transcript_text = ?4, segments_json = ?5,
+         peaks_json = CASE WHEN ?7 = '[]' THEN peaks_json ELSE ?7 END, updated_at = ?6 WHERE id = ?1",
+        rusqlite::params![id, language, duration_secs, transcript_text, segments_json, now(), peaks_json],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
@@ -211,6 +263,8 @@ pub fn update_transcript_edit(conn: &Connection, id: &str, segments: &[Segment])
 fn row_to_work(row: &rusqlite::Row) -> rusqlite::Result<Work> {
     let segments_json: String = row.get("segments_json")?;
     let segments: Vec<Segment> = serde_json::from_str(&segments_json).unwrap_or_default();
+    let peaks_json: String = row.get("peaks_json")?;
+    let peaks: Vec<f32> = serde_json::from_str(&peaks_json).unwrap_or_default();
     Ok(Work {
         id: row.get("id")?,
         source_filename: row.get("source_filename")?,
@@ -221,15 +275,17 @@ fn row_to_work(row: &rusqlite::Row) -> rusqlite::Result<Work> {
         quant: row.get("quant")?,
         status: row.get("status")?,
         error: row.get("error")?,
+        kind: row.get("kind")?,
         transcript_text: row.get("transcript_text")?,
         segments,
+        peaks,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
     })
 }
 
 const SELECT_ALL: &str = "SELECT id, source_filename, source_path, duration_secs, language, model_id, quant,
-    status, error, transcript_text, segments_json, created_at, updated_at FROM works";
+    status, error, kind, transcript_text, segments_json, peaks_json, created_at, updated_at FROM works";
 
 pub fn list_recent(conn: &Connection, limit: i64) -> Result<Vec<Work>, String> {
     let mut stmt = conn
@@ -295,7 +351,7 @@ mod tests {
         let running = create_queued(&conn, "a.mp3", None, None, None, None).unwrap();
         let done = create_queued(&conn, "b.mp3", None, None, None, None).unwrap();
         set_status(&conn, &running, "running", None).unwrap();
-        save_transcript(&conn, &done, None, Some(3.0), &[]).unwrap();
+        save_transcript(&conn, &done, None, Some(3.0), &[], &[]).unwrap();
 
         assert_eq!(requeue_orphans(&conn).unwrap(), 1);
         assert_eq!(get(&conn, &running).unwrap().unwrap().status, "queued");
@@ -371,7 +427,7 @@ mod tests {
             Segment { start: 0.0, end: 2.0, text: "Hello everyone.".to_string() },
             Segment { start: 2.5, end: 5.0, text: "Today we discuss budgets.".to_string() },
         ];
-        save_transcript(&conn, &id, Some("en"), Some(300.0), &segments).unwrap();
+        save_transcript(&conn, &id, Some("en"), Some(300.0), &segments, &[0.1, 0.9, 0.4]).unwrap();
 
         let work = get(&conn, &id).unwrap().unwrap();
         assert_eq!(work.status, "done");
@@ -379,6 +435,12 @@ mod tests {
         assert_eq!(work.duration_secs, Some(300.0));
         assert_eq!(work.segments.len(), 2);
         assert!(work.transcript_text.contains("budgets"));
+        // Peaks round-trip so the library redraws the real waveform.
+        assert_eq!(work.peaks, vec![0.1, 0.9, 0.4]);
+
+        // An empty-peaks re-run (e.g. per-segment) keeps the stored waveform.
+        save_transcript(&conn, &id, Some("en"), Some(300.0), &segments, &[]).unwrap();
+        assert_eq!(get(&conn, &id).unwrap().unwrap().peaks, vec![0.1, 0.9, 0.4]);
 
         let results = search(&conn, "budgets").unwrap();
         assert_eq!(results.len(), 1);
@@ -403,7 +465,7 @@ mod tests {
 
         save_transcript(&conn, &id, Some("en"), None, &[
             Segment { start: 0.0, end: 1.0, text: "Original.".to_string() },
-        ])
+        ], &[])
         .unwrap();
 
         update_transcript_edit(
@@ -419,6 +481,24 @@ mod tests {
 
         delete(&conn, &id).unwrap();
         assert!(get(&conn, &id).unwrap().is_none());
+    }
+
+    #[test]
+    fn create_subtitle_is_a_done_subtitle_work() {
+        let conn = temp_db();
+        let segments = vec![
+            Segment { start: 0.0, end: 1.5, text: "Hello".to_string() },
+            Segment { start: 1.5, end: 4.0, text: "world".to_string() },
+        ];
+        let id = create_subtitle(&conn, "movie.srt", Some("/tmp/movie.srt"), &segments).unwrap();
+        let work = get(&conn, &id).unwrap().unwrap();
+        assert_eq!(work.kind, "subtitle");
+        assert_eq!(work.status, "done");
+        assert_eq!(work.model_id, None);
+        assert_eq!(work.duration_secs, Some(4.0)); // last segment end
+        assert_eq!(work.segments.len(), 2);
+        // Text is searchable like any transcript.
+        assert!(search(&conn, "world").unwrap().iter().any(|w| w.id == id));
     }
 
     #[test]

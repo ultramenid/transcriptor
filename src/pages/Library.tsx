@@ -118,6 +118,8 @@ export default function Library({
   const [renameValue, setRenameValue] = useState("");
   const [pendingDelete, setPendingDelete] = useState<Work | null>(null);
   const [menu, setMenu] = useState<{ work: Work; x: number; y: number } | null>(null);
+  const [filter, setFilter] = useState<"all" | "transcript" | "subtitle">("all");
+  const [importMsg, setImportMsg] = useState<string | null>(null);
 
   const installed = models.filter((m) => m.variants.some((v) => v.installed));
 
@@ -143,6 +145,21 @@ export default function Library({
     });
     if (!selected) return;
     onFiles(Array.isArray(selected) ? selected : [selected]);
+  }
+
+  async function importSubtitle() {
+    const picked = await open({
+      multiple: false,
+      filters: [{ name: "Subtitles", extensions: ["srt", "vtt"] }],
+    });
+    if (typeof picked !== "string") return;
+    try {
+      const id = await invoke<string>("import_subtitle", { path: picked });
+      onOpen(id);
+    } catch (e) {
+      setImportMsg(String(e));
+      setTimeout(() => setImportMsg(null), 4000);
+    }
   }
 
   async function cancelWork(w: Work) {
@@ -189,8 +206,17 @@ export default function Library({
     else setPendingDelete(w);
   }
 
-  const groups = groupByDate(works);
+  // Imported subtitles carry kind "subtitle"; everything else is a transcript.
+  const subtitleCount = works.filter((w) => w.kind === "subtitle").length;
+  const filtered =
+    filter === "all" ? works : works.filter((w) => (w.kind ?? "transcript") === filter);
+  const groups = groupByDate(filtered);
   const empty = works.length === 0 && !query.trim();
+
+  const filterTab = (v: typeof filter) =>
+    `rounded px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.1em] transition-colors ${
+      filter === v ? "bg-ink text-bg" : "text-ink-faint hover:text-ink-muted"
+    }`;
 
   return (
     <main className="h-full overflow-y-auto">
@@ -231,6 +257,17 @@ export default function Library({
           <p className="mt-3 text-center font-mono text-xs text-ink-muted">
             That doesn’t look like an audio or video file.
           </p>
+        )}
+
+        <p className="mt-3 text-center text-sm text-ink-muted">
+          Already have subtitles?{" "}
+          <button onClick={importSubtitle} className="text-ink underline underline-offset-2 hover:opacity-80">
+            Import an .srt or .vtt
+          </button>{" "}
+          to edit
+        </p>
+        {importMsg && (
+          <p className="mt-2 text-center font-mono text-xs text-ink-muted">{importMsg}</p>
         )}
 
         {/* Staged batch — review files, pick model + language, then run. The
@@ -320,9 +357,24 @@ export default function Library({
         {(works.length > 0 || query.trim()) && (
           <div className="mt-10">
             <div className="mb-3 flex items-center justify-between gap-4">
-              <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-ink-faint">
-                Library · {works.length}
-              </p>
+              <div className="flex items-center gap-3">
+                <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-ink-faint">
+                  Library · {filtered.length}
+                </p>
+                {subtitleCount > 0 && (
+                  <div className="flex gap-1 rounded-md border border-border-subtle bg-panel p-0.5">
+                    {([
+                      ["all", "All"],
+                      ["transcript", "Transcripts"],
+                      ["subtitle", "Subtitles"],
+                    ] as const).map(([v, label]) => (
+                      <button key={v} onClick={() => setFilter(v)} className={filterTab(v)}>
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
               <input
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
@@ -333,7 +385,7 @@ export default function Library({
 
             {groups.length === 0 && (
               <p className="border-t border-border-subtle py-10 text-center font-mono text-xs text-ink-faint">
-                No matches for “{query}”.
+                {query.trim() ? `No matches for “${query}”.` : "Nothing here yet."}
               </p>
             )}
 
@@ -393,7 +445,7 @@ export default function Library({
                         {w.durationSecs != null ? formatDuration(w.durationSecs) : "—"}
                       </span>
                       <span className="truncate font-mono text-[11px] text-ink-faint">
-                        {w.modelId ?? "—"}
+                        {w.modelId ?? (w.kind === "subtitle" ? "SRT" : "—")}
                       </span>
                       <span className="text-right font-mono text-[11px] tabular-nums text-ink-faint">
                         {statusLine(w)}
